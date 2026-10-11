@@ -54,6 +54,20 @@ config:
 env: []
 envFrom: []
 
+# Arbitrary env vars, split by sensitivity. Keys become env var names as-is.
+# secretEnv -> Secret "<release name>-env", configEnv -> ConfigMap
+# "<release name>-env" -- both injected into the container via envFrom.
+#
+# e.g. for Bedrock credentials (omit entirely to rely on IRSA instead):
+# secretEnv:
+#   AWS_ACCESS_KEY_ID: ""
+#   AWS_SECRET_ACCESS_KEY: ""
+#   AWS_SESSION_TOKEN: ""
+# configEnv:
+#   AWS_REGION: "us-east-1"
+secretEnv: {}
+configEnv: {}
+
 service:
   type: ClusterIP
   port: 4000
