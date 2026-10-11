@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import json
+import logging
 import os
 import time
 
@@ -19,6 +21,7 @@ MODELS = {m.name: m for m in config.models}
 PROVIDERS = {"bedrock": bedrock, "ollama": ollama}
 
 app = FastAPI(title="llm-mitm")
+logger = logging.getLogger("llm_mitm")
 
 
 def _openai_error(message: str, error_type: str, status_code: int) -> JSONResponse:
@@ -59,7 +62,7 @@ async def chat_completions(request: Request):
     if not body.get("messages"):
         return _openai_error("field 'messages' is required", "invalid_request_error", 400)
 
-    key_id = get_key_id(request)
+    key_id = get_key_id(request, hash_api_keys=config.server.hash_api_keys)
     provider = PROVIDERS[model_entry.provider]
     provider_cfg = model_entry.provider_config
     stream = bool(body.get("stream", False))
@@ -73,9 +76,11 @@ async def chat_completions(request: Request):
             try:
                 async for sse_chunk in provider.chat_stream(body, provider_cfg, usage_holder):
                     yield sse_chunk
-            except Exception:
+            except Exception as exc:  # closed out as a terminal SSE error event below
                 status = "error"
-                raise
+                logger.exception("streaming chat completion failed (model=%s)", model_name)
+                yield f"data: {json.dumps({'error': {'message': str(exc), 'type': 'upstream_error'}})}\n\n"
+                yield "data: [DONE]\n\n"
             finally:
                 cost = compute_cost(
                     provider_cfg, usage_holder["prompt_tokens"], usage_holder["completion_tokens"]

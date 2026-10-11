@@ -47,6 +47,10 @@ class ModelEntry(BaseModel):
 class ServerConfig(BaseModel):
     host: str = "0.0.0.0"
     port: int = 4000
+    # Hash API keys down to a short id before using them anywhere (usage
+    # logs, Prometheus key_id label). Disable to see raw keys in those
+    # places instead -- not recommended outside trusted/local setups.
+    hash_api_keys: bool = True
 
 
 class AppConfig(BaseModel):

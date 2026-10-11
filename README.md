@@ -92,7 +92,11 @@ Point OpenWebUI / opencode / any OpenAI-compatible client at
 
 Every request's `Authorization: Bearer <key>` (or `x-api-key` /
 `api-key` header) is hashed down to a short `key_id` -- nothing is
-rejected based on it, it's purely a bucket for accounting.
+rejected based on it, it's purely a bucket for accounting. Set
+`server.hash_api_keys: false` in `config.yaml` to use the raw key as the
+`key_id` instead (e.g. if your keys are already opaque/non-sensitive
+labels) -- not recommended if keys are actual secrets, since they'd then
+show up as-is in logs and Prometheus labels.
 
 Each request emits:
 
