@@ -1,0 +1,117 @@
+name: CI
+
+on:
+  push:
+jobs:
+  analyze:
+    name: Analyze
+
+    runs-on: 'ubuntu-latest'
+    permissions:
+      # required for all workflows
+      security-events: write
+
+      # required to fetch internal or private CodeQL packs
+      packages: read
+
+      # only required for workflows in private repositories
+      actions: read
+      contents: read
+    steps:
+    - name: Checkout repository
+      uses: actions/checkout@v7
+    - name: Initialize CodeQL
+      uses: github/codeql-action/init@v4
+      with:
+        languages: python, actions
+        build-mode: none
+    - name: Perform CodeQL Analysis
+      uses: github/codeql-action/analyze@v4
+
+  test:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: astral-sh/setup-uv@v10.2.0
+
+      - name: Install dependencies
+        run: uv sync --all-groups
+
+      - name: Run ruff
+        run: uv run ruff check
+
+      - name: Run tests
+        run: uv run python -m pytest -v tests/
+
+  build-and-push:
+    needs: test
+    if: github.ref == 'refs/heads/master'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v4
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Extract image metadata
+        id: meta
+        uses: docker/metadata-action@v6
+        with:
+          images: ghcr.io/${{ github.repository }}
+          tags: |
+            type=raw,value=latest
+            type=raw,value=${{ github.run_number }}
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v4
+
+      - name: Build and push
+        uses: docker/build-push-action@v7
+        with:
+          context: .
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Helm tool installer
+        uses: Azure/setup-helm@v5
+
+      - name: Lint
+        run: |
+          helm lint ./helm-charts/llm-mitm/
+
+      - name: Package
+        run: |
+          helm package --version 0.1.${{ github.run_number }} ./helm-charts/llm-mitm/
+
+      - name: Upload
+        uses: actions/upload-artifact@v7
+        with:
+          name: chart
+          path: llm-mitm-0.1.${{ github.run_number }}.tgz
+
+      - name: Push Chart Artifact
+        uses: dmnemec/copy_file_to_another_repo_action@bbebd3da22e4a37d04dca5f782edd5201cb97083
+        env:
+          API_TOKEN_GITHUB: ${{ secrets.API_TOKEN_GITHUB }}
+        with:
+          source_file: llm-mitm-0.1.${{ github.run_number }}.tgz
+          destination_repo: 'leprechaun/leprechaun.github.io'
+          destination_folder: 'llm-mitm'
+          destination_branch: master
+          user_email: 'leprechaun-automation@github.com'
+          user_name: 'leprechaun-automation'
+          commit_message: llm-mitm 0.1.${{ github.run_number }}
