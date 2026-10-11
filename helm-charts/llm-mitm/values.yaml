@@ -7,8 +7,10 @@ replicaCount: 1
 image:
   repository: ghcr.io/leprechaun/llm-mitm
   pullPolicy: IfNotPresent
-  # Overrides the image tag whose default is the chart appVersion.
-  tag: "latest"
+  # Empty by default so the deployed tag is the chart's appVersion -- the
+  # CI pipeline sets that to the immutable per-build image tag via
+  # `helm package --app-version`, rather than floating on "latest".
+  tag: ""
 
 imagePullSecrets: []
 nameOverride: ""

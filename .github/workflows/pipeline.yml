@@ -95,7 +95,10 @@ jobs:
 
       - name: Package
         run: |
-          helm package --version 0.1.${{ github.run_number }} ./helm-charts/llm-mitm/
+          helm package \
+            --version 0.1.${{ github.run_number }} \
+            --app-version ${{ github.run_number }} \
+            ./helm-charts/llm-mitm/
 
       - name: Upload
         uses: actions/upload-artifact@v7
