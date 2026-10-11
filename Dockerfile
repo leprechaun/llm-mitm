@@ -1,4 +1,4 @@
-FROM python:3.13-slim AS builder
+FROM python:3.14-slim AS builder
 
 RUN pip install --no-cache-dir uv
 
@@ -8,7 +8,7 @@ RUN uv sync --frozen --no-install-project --no-dev
 
 COPY . .
 
-FROM python:3.13-slim
+FROM python:3.14-slim
 
 WORKDIR /app
 COPY --from=builder /app /app
