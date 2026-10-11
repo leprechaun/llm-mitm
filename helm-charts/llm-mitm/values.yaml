@@ -74,6 +74,24 @@ ingress:
   #    hosts:
   #      - chart-example.local
 
+# Gateway API alternative to ingress above. Leave ingress.enabled: false when
+# using this.
+httpRoute:
+  enabled: false
+  annotations: {}
+  parentRefs:
+    - name: my-gateway
+      # namespace: gateway-system
+      # sectionName: https
+  hostnames: []
+    # - llm-mitm.example.com
+  rules:
+    - matches:
+        - path:
+            type: PathPrefix
+            value: /
+      # filters: []
+
 resources: {}
   # We usually recommend not to specify default resources and to leave this as a conscious
   # choice for the user. This also increases chances charts run on environments with little
