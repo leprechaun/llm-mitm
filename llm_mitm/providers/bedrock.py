@@ -26,22 +26,112 @@ def _client(region: str | None):
     return boto3.client("bedrock-runtime", region_name=region)
 
 
+def _content_text(content: str | list[dict] | None) -> str:
+    if isinstance(content, list):
+        return "".join(part.get("text", "") for part in content if part.get("type") == "text")
+    return content or ""
+
+
 def _to_bedrock_messages(messages: list[dict]) -> tuple[list[dict], list[dict]]:
     system: list[dict] = []
-    converted: list[dict] = []
+    # Flat (role, content_block) pairs, merged into alternating turns below --
+    # Bedrock requires strict user/assistant alternation, so e.g. consecutive
+    # "tool" result messages must collapse into one user turn.
+    turns: list[tuple[str, dict]] = []
+
     for message in messages:
         role = message.get("role")
-        content = message.get("content")
-        if isinstance(content, list):
-            text = "".join(part.get("text", "") for part in content if part.get("type") == "text")
-        else:
-            text = content or ""
+
         if role == "system":
-            system.append({"text": text})
-        elif role in ("user", "assistant"):
-            converted.append({"role": role, "content": [{"text": text}]})
-        # tool-role messages aren't translated yet (tool calling TBD)
+            text = _content_text(message.get("content"))
+            if text:
+                system.append({"text": text})
+            continue
+
+        if role == "tool":
+            text = _content_text(message.get("content"))
+            turns.append(
+                (
+                    "user",
+                    {
+                        "toolResult": {
+                            "toolUseId": message.get("tool_call_id", ""),
+                            "content": [{"text": text}],
+                        }
+                    },
+                )
+            )
+            continue
+
+        if role not in ("user", "assistant"):
+            continue
+
+        text = _content_text(message.get("content"))
+        if text:
+            turns.append((role, {"text": text}))
+
+        if role == "assistant":
+            for call in message.get("tool_calls") or []:
+                fn = call.get("function", {})
+                try:
+                    tool_input = json.loads(fn.get("arguments") or "{}")
+                except (json.JSONDecodeError, TypeError):
+                    tool_input = {}
+                turns.append(
+                    (
+                        "assistant",
+                        {
+                            "toolUse": {
+                                "toolUseId": call.get("id", ""),
+                                "name": fn.get("name", ""),
+                                "input": tool_input,
+                            }
+                        },
+                    )
+                )
+
+    converted: list[dict] = []
+    for role, block in turns:
+        if converted and converted[-1]["role"] == role:
+            converted[-1]["content"].append(block)
+        else:
+            converted.append({"role": role, "content": [block]})
     return system, converted
+
+
+def _to_bedrock_tool_config(body: dict) -> dict | None:
+    tools = body.get("tools")
+    if not tools:
+        return None
+
+    tool_specs = []
+    for tool in tools:
+        if tool.get("type") != "function":
+            continue
+        fn = tool["function"]
+        tool_specs.append(
+            {
+                "toolSpec": {
+                    "name": fn["name"],
+                    "description": fn.get("description", ""),
+                    "inputSchema": {"json": fn.get("parameters") or {"type": "object", "properties": {}}},
+                }
+            }
+        )
+    if not tool_specs:
+        return None
+
+    tool_choice = body.get("tool_choice")
+    if tool_choice == "none":
+        return None
+
+    config: dict[str, Any] = {"tools": tool_specs}
+    if tool_choice == "required":
+        config["toolChoice"] = {"any": {}}
+    elif isinstance(tool_choice, dict) and tool_choice.get("type") == "function":
+        config["toolChoice"] = {"tool": {"name": tool_choice["function"]["name"]}}
+    # "auto" (or unset) -> omit toolChoice, Bedrock defaults to auto
+    return config
 
 
 def _inference_config(body: dict) -> dict:
@@ -67,12 +157,23 @@ def _converse_kwargs(body: dict, model_cfg: BedrockModelConfig) -> dict:
     }
     if system:
         kwargs["system"] = system
+    tool_config = _to_bedrock_tool_config(body)
+    if tool_config:
+        kwargs["toolConfig"] = tool_config
     return kwargs
 
 
 def _openai_response(
-    model_name: str, text: str, prompt_tokens: int, completion_tokens: int, finish_reason: str
+    model_name: str,
+    text: str,
+    tool_calls: list[dict],
+    prompt_tokens: int,
+    completion_tokens: int,
+    finish_reason: str,
 ) -> dict:
+    message: dict[str, Any] = {"role": "assistant", "content": text or None}
+    if tool_calls:
+        message["tool_calls"] = tool_calls
     return {
         "id": f"chatcmpl-{uuid.uuid4().hex}",
         "object": "chat.completion",
@@ -81,7 +182,7 @@ def _openai_response(
         "choices": [
             {
                 "index": 0,
-                "message": {"role": "assistant", "content": text},
+                "message": message,
                 "finish_reason": finish_reason,
             }
         ],
@@ -97,12 +198,25 @@ async def chat(body: dict, model_cfg: BedrockModelConfig) -> tuple[dict, int, in
     client = _client(model_cfg.region)
     kwargs = _converse_kwargs(body, model_cfg)
     response = await asyncio.to_thread(client.converse, **kwargs)
-    text = "".join(block.get("text", "") for block in response["output"]["message"]["content"])
+    content_blocks = response["output"]["message"]["content"]
+    text = "".join(block.get("text", "") for block in content_blocks if "text" in block)
+    tool_calls = [
+        {
+            "id": block["toolUse"]["toolUseId"],
+            "type": "function",
+            "function": {
+                "name": block["toolUse"]["name"],
+                "arguments": json.dumps(block["toolUse"].get("input", {})),
+            },
+        }
+        for block in content_blocks
+        if "toolUse" in block
+    ]
     usage = response.get("usage", {})
     prompt_tokens = usage.get("inputTokens", 0)
     completion_tokens = usage.get("outputTokens", 0)
     finish_reason = _STOP_REASON_MAP.get(response.get("stopReason"), "stop")
-    data = _openai_response(body["model"], text, prompt_tokens, completion_tokens, finish_reason)
+    data = _openai_response(body["model"], text, tool_calls, prompt_tokens, completion_tokens, finish_reason)
     return data, prompt_tokens, completion_tokens
 
 
@@ -128,6 +242,9 @@ async def chat_stream(body: dict, model_cfg: BedrockModelConfig, usage_holder: d
     completion_id = f"chatcmpl-{uuid.uuid4().hex}"
     created = int(time.time())
     model_name = body["model"]
+    # Bedrock's contentBlockIndex also counts text blocks; OpenAI's tool_calls
+    # delta index only counts tool calls, so we remap per tool-use block.
+    tool_call_indexes: dict[int, int] = {}
 
     def chunk(delta: dict, finish_reason: str | None = None) -> str:
         payload = {
@@ -147,10 +264,42 @@ async def chat_stream(body: dict, model_cfg: BedrockModelConfig, usage_holder: d
             break
         if isinstance(event, Exception):
             raise event
-        if "contentBlockDelta" in event:
-            text = event["contentBlockDelta"].get("delta", {}).get("text", "")
-            if text:
-                yield chunk({"content": text})
+        if "contentBlockStart" in event:
+            start = event["contentBlockStart"]
+            tool_use_start = start.get("start", {}).get("toolUse")
+            if tool_use_start:
+                tool_call_index = len(tool_call_indexes)
+                tool_call_indexes[start["contentBlockIndex"]] = tool_call_index
+                yield chunk(
+                    {
+                        "tool_calls": [
+                            {
+                                "index": tool_call_index,
+                                "id": tool_use_start["toolUseId"],
+                                "type": "function",
+                                "function": {"name": tool_use_start["name"], "arguments": ""},
+                            }
+                        ]
+                    }
+                )
+        elif "contentBlockDelta" in event:
+            block_delta = event["contentBlockDelta"]
+            delta = block_delta.get("delta", {})
+            if "text" in delta:
+                if delta["text"]:
+                    yield chunk({"content": delta["text"]})
+            elif "toolUse" in delta:
+                tool_call_index = tool_call_indexes.get(block_delta.get("contentBlockIndex"), 0)
+                yield chunk(
+                    {
+                        "tool_calls": [
+                            {
+                                "index": tool_call_index,
+                                "function": {"arguments": delta["toolUse"].get("input", "")},
+                            }
+                        ]
+                    }
+                )
         elif "metadata" in event:
             usage = event["metadata"].get("usage", {})
             usage_holder["prompt_tokens"] = usage.get("inputTokens", 0)
