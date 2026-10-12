@@ -69,7 +69,12 @@ async def chat_completions(request: Request):
     start = time.monotonic()
 
     if stream:
-        usage_holder = {"prompt_tokens": 0, "completion_tokens": 0}
+        usage_holder = {
+            "prompt_tokens": 0,
+            "completion_tokens": 0,
+            "cache_read_tokens": 0,
+            "cache_write_tokens": 0,
+        }
 
         async def generate():
             status = "ok"
@@ -83,7 +88,11 @@ async def chat_completions(request: Request):
                 yield "data: [DONE]\n\n"
             finally:
                 cost = compute_cost(
-                    provider_cfg, usage_holder["prompt_tokens"], usage_holder["completion_tokens"]
+                    provider_cfg,
+                    usage_holder["prompt_tokens"],
+                    usage_holder["completion_tokens"],
+                    usage_holder["cache_read_tokens"],
+                    usage_holder["cache_write_tokens"],
                 )
                 record_usage(
                     UsageEvent(
@@ -92,6 +101,8 @@ async def chat_completions(request: Request):
                         provider=model_entry.provider,
                         prompt_tokens=usage_holder["prompt_tokens"],
                         completion_tokens=usage_holder["completion_tokens"],
+                        cache_read_tokens=usage_holder["cache_read_tokens"],
+                        cache_write_tokens=usage_holder["cache_write_tokens"],
                         cost_usd=cost,
                         duration_s=time.monotonic() - start,
                         status=status,
@@ -102,7 +113,9 @@ async def chat_completions(request: Request):
         return StreamingResponse(generate(), media_type="text/event-stream")
 
     try:
-        data, prompt_tokens, completion_tokens = await provider.chat(body, provider_cfg)
+        data, prompt_tokens, completion_tokens, cache_read_tokens, cache_write_tokens = await provider.chat(
+            body, provider_cfg
+        )
     except Exception as exc:  # noqa: BLE001 -- turned into a clean upstream_error response below
         record_usage(
             UsageEvent(
@@ -119,7 +132,7 @@ async def chat_completions(request: Request):
         )
         return _openai_error(str(exc), "upstream_error", 502)
 
-    cost = compute_cost(provider_cfg, prompt_tokens, completion_tokens)
+    cost = compute_cost(provider_cfg, prompt_tokens, completion_tokens, cache_read_tokens, cache_write_tokens)
     record_usage(
         UsageEvent(
             key_id=key_id,
@@ -127,6 +140,8 @@ async def chat_completions(request: Request):
             provider=model_entry.provider,
             prompt_tokens=prompt_tokens,
             completion_tokens=completion_tokens,
+            cache_read_tokens=cache_read_tokens,
+            cache_write_tokens=cache_write_tokens,
             cost_usd=cost,
             duration_s=time.monotonic() - start,
             status="ok",

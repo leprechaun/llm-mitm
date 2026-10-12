@@ -148,6 +148,23 @@ def _inference_config(body: dict) -> dict:
     return cfg
 
 
+def _apply_prompt_caching(kwargs: dict) -> None:
+    # Cache breakpoints mark "everything up to here is worth reusing". Since
+    # messages only ever grow by appending, a breakpoint at the end of the
+    # current last message will still be a valid prefix match next turn.
+    system = kwargs.get("system")
+    if system:
+        system.append({"cachePoint": {"type": "default"}})
+
+    tool_config = kwargs.get("toolConfig")
+    if tool_config and tool_config.get("tools"):
+        tool_config["tools"].append({"cachePoint": {"type": "default"}})
+
+    messages = kwargs.get("messages")
+    if messages:
+        messages[-1]["content"].append({"cachePoint": {"type": "default"}})
+
+
 def _converse_kwargs(body: dict, model_cfg: BedrockModelConfig) -> dict:
     system, messages = _to_bedrock_messages(body["messages"])
     kwargs: dict[str, Any] = {
@@ -160,6 +177,8 @@ def _converse_kwargs(body: dict, model_cfg: BedrockModelConfig) -> dict:
     tool_config = _to_bedrock_tool_config(body)
     if tool_config:
         kwargs["toolConfig"] = tool_config
+    if model_cfg.prompt_caching:
+        _apply_prompt_caching(kwargs)
     return kwargs
 
 
@@ -194,7 +213,7 @@ def _openai_response(
     }
 
 
-async def chat(body: dict, model_cfg: BedrockModelConfig) -> tuple[dict, int, int]:
+async def chat(body: dict, model_cfg: BedrockModelConfig) -> tuple[dict, int, int, int, int]:
     client = _client(model_cfg.region)
     kwargs = _converse_kwargs(body, model_cfg)
     response = await asyncio.to_thread(client.converse, **kwargs)
@@ -215,9 +234,11 @@ async def chat(body: dict, model_cfg: BedrockModelConfig) -> tuple[dict, int, in
     usage = response.get("usage", {})
     prompt_tokens = usage.get("inputTokens", 0)
     completion_tokens = usage.get("outputTokens", 0)
+    cache_read_tokens = usage.get("cacheReadInputTokens", 0)
+    cache_write_tokens = usage.get("cacheWriteInputTokens", 0)
     finish_reason = _STOP_REASON_MAP.get(response.get("stopReason"), "stop")
     data = _openai_response(body["model"], text, tool_calls, prompt_tokens, completion_tokens, finish_reason)
-    return data, prompt_tokens, completion_tokens
+    return data, prompt_tokens, completion_tokens, cache_read_tokens, cache_write_tokens
 
 
 async def chat_stream(body: dict, model_cfg: BedrockModelConfig, usage_holder: dict) -> AsyncIterator[str]:
@@ -304,6 +325,8 @@ async def chat_stream(body: dict, model_cfg: BedrockModelConfig, usage_holder: d
             usage = event["metadata"].get("usage", {})
             usage_holder["prompt_tokens"] = usage.get("inputTokens", 0)
             usage_holder["completion_tokens"] = usage.get("outputTokens", 0)
+            usage_holder["cache_read_tokens"] = usage.get("cacheReadInputTokens", 0)
+            usage_holder["cache_write_tokens"] = usage.get("cacheWriteInputTokens", 0)
         elif "messageStop" in event:
             finish_reason = _STOP_REASON_MAP.get(event["messageStop"].get("stopReason"), "stop")
             yield chunk({}, finish_reason)

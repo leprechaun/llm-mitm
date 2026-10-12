@@ -7,22 +7,33 @@ from pydantic import BaseModel
 
 
 class PricingTier(BaseModel):
-    # Applies when prompt_tokens exceeds this threshold (e.g. Anthropic's
-    # >200k-context pricing tier on Bedrock).
+    # Applies when context size (prompt + cache tokens) exceeds this
+    # threshold (e.g. Anthropic's >200k-context pricing tier on Bedrock).
     above_tokens: int
     input_cost_per_1m: float
     output_cost_per_1m: float
+    cache_read_cost_per_1m: float = 0.0
+    cache_write_cost_per_1m: float = 0.0
 
 
 class PricingConfig(BaseModel):
     input_cost_per_1m: float = 0.0
     output_cost_per_1m: float = 0.0
+    # Bedrock prompt caching: cache_read is a cache hit (cheap), cache_write
+    # is creating/refreshing a cache entry (pricier than normal input).
+    cache_read_cost_per_1m: float = 0.0
+    cache_write_cost_per_1m: float = 0.0
     tiers: list[PricingTier] = []
 
 
 class BedrockModelConfig(PricingConfig):
     model_id: str
     region: str | None = None
+    # Insert cachePoint breakpoints (system prompt, tool config, last
+    # message) so repeated context across turns is served from Bedrock's
+    # prompt cache instead of being billed at full input price. Only
+    # supported by some models (e.g. recent Anthropic Claude models).
+    prompt_caching: bool = False
 
 
 class OllamaModelConfig(PricingConfig):

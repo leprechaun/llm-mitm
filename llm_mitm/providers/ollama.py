@@ -17,7 +17,7 @@ def _payload(body: dict, model_cfg: OllamaModelConfig, stream: bool) -> dict:
     return payload
 
 
-async def chat(body: dict, model_cfg: OllamaModelConfig) -> tuple[dict, int, int]:
+async def chat(body: dict, model_cfg: OllamaModelConfig) -> tuple[dict, int, int, int, int]:
     payload = _payload(body, model_cfg, stream=False)
     async with httpx.AsyncClient(timeout=_TIMEOUT) as client:
         response = await client.post(f"{model_cfg.base_url}/v1/chat/completions", json=payload)
@@ -25,7 +25,8 @@ async def chat(body: dict, model_cfg: OllamaModelConfig) -> tuple[dict, int, int
         data = response.json()
     data["model"] = body["model"]
     usage = data.get("usage", {})
-    return data, usage.get("prompt_tokens", 0), usage.get("completion_tokens", 0)
+    # Ollama has no prompt-caching concept, so cache token counts are always 0.
+    return data, usage.get("prompt_tokens", 0), usage.get("completion_tokens", 0), 0, 0
 
 
 async def chat_stream(body: dict, model_cfg: OllamaModelConfig, usage_holder: dict) -> AsyncIterator[str]:

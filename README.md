@@ -12,8 +12,6 @@ Prometheus metrics.
   as an identity to track cost against; validating it is the job of a
   reverse proxy in front of this service.
 - No image/vision support yet.
-- No tool/function calling translation for Bedrock yet (Ollama gets this for
-  free, since its requests are proxied through mostly as-is).
 - No persistent usage database -- usage is a JSON line per request on stdout
   plus Prometheus counters/histograms. Point your log pipeline / Prometheus
   at it.
@@ -60,7 +58,25 @@ rate once the prompt exceeds a size threshold. Express that with `tiers`:
 ```
 
 `tiers` works the same way under both `bedrock:` and `ollama:` blocks. The
-tier is chosen by prompt (context) size, not by total tokens.
+tier is chosen by context size (prompt + cache tokens), not just prompt
+tokens.
+
+Bedrock also supports prompt caching, which reuses repeated context (system
+prompt, tool schemas, growing chat history) across turns at a steep discount
+instead of billing it as fresh input every time -- a big win for agentic
+clients like opencode that resend the whole conversation on every turn. Not
+all Bedrock models support it. Enable it per-model and set its (different)
+cache rates:
+
+```yaml
+    bedrock:
+      model_id: ...
+      input_cost_per_1m: 0.10
+      output_cost_per_1m: 0.50
+      cache_read_cost_per_1m: 0.01     # cache hit -- cheap
+      cache_write_cost_per_1m: 0.125   # creating/refreshing a cache entry -- pricier than input
+      prompt_caching: true
+```
 
 Add as many entries as you like, mixing providers freely. AWS credentials
 for Bedrock are picked up the normal boto3 way (env vars, `~/.aws/credentials`,
@@ -102,7 +118,7 @@ Each request emits:
 
 1. A JSON line on stdout via the `llm_mitm.usage` logger:
    ```json
-   {"key_id": "...", "model": "claude-sonnet", "provider": "bedrock", "prompt_tokens": 123, "completion_tokens": 45, "cost_usd": 0.0012, "duration_s": 1.3, "status": "ok", "stream": false, "ts": 1760169600.0}
+   {"key_id": "...", "model": "claude-sonnet", "provider": "bedrock", "prompt_tokens": 123, "completion_tokens": 45, "cost_usd": 0.0012, "duration_s": 1.3, "status": "ok", "stream": false, "cache_read_tokens": 0, "cache_write_tokens": 0, "ts": 1760169600.0}
    ```
 2. Updates to Prometheus counters/histograms on `/metrics`:
    `llm_mitm_requests_total`, `llm_mitm_tokens_total`,
