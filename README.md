@@ -78,6 +78,23 @@ cache rates:
       prompt_caching: true
 ```
 
+Not every Bedrock model handles tool calling the same way. Two per-model
+switches handle the quirks:
+
+```yaml
+    bedrock:
+      model_id: ...
+      supports_tools: true           # set false to never send tools to this model at all
+      supports_tool_streaming: true  # set false if it rejects ConverseStream + tools together
+```
+
+`supports_tool_streaming: false` is for models like Llama 4 Maverick, which
+reject streaming requests that also include tools ("This model doesn't
+support tool use in streaming mode"). When that happens, a streaming request
+with tools transparently falls back to a blocking call replayed as a
+single-shot SSE stream, so the client still gets the response shape it asked
+for -- streaming without tools is unaffected.
+
 Add as many entries as you like, mixing providers freely. AWS credentials
 for Bedrock are picked up the normal boto3 way (env vars, `~/.aws/credentials`,
 instance role, SSO profile) -- there's nothing AWS-specific to set in the

@@ -34,6 +34,16 @@ class BedrockModelConfig(PricingConfig):
     # prompt cache instead of being billed at full input price. Only
     # supported by some models (e.g. recent Anthropic Claude models).
     prompt_caching: bool = False
+    # Whether this model accepts tools/tool_choice at all on Converse. If
+    # False, tools are never sent even if the client includes them.
+    supports_tools: bool = True
+    # Some Bedrock models (e.g. Llama 4 Maverick) reject ConverseStream
+    # requests that also include toolConfig ("This model doesn't support
+    # tool use in streaming mode"). Set False to transparently fall back to
+    # a blocking call for streaming requests that include tools, replayed to
+    # the client as a single-shot SSE stream so it still gets back the
+    # streaming response shape it asked for.
+    supports_tool_streaming: bool = True
 
 
 class OllamaModelConfig(PricingConfig):

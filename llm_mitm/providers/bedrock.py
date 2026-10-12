@@ -165,6 +165,10 @@ def _apply_prompt_caching(kwargs: dict) -> None:
         messages[-1]["content"].append({"cachePoint": {"type": "default"}})
 
 
+def _wants_tool_config(body: dict, model_cfg: BedrockModelConfig) -> bool:
+    return bool(model_cfg.supports_tools and _to_bedrock_tool_config(body))
+
+
 def _converse_kwargs(body: dict, model_cfg: BedrockModelConfig) -> dict:
     system, messages = _to_bedrock_messages(body["messages"])
     kwargs: dict[str, Any] = {
@@ -174,9 +178,8 @@ def _converse_kwargs(body: dict, model_cfg: BedrockModelConfig) -> dict:
     }
     if system:
         kwargs["system"] = system
-    tool_config = _to_bedrock_tool_config(body)
-    if tool_config:
-        kwargs["toolConfig"] = tool_config
+    if _wants_tool_config(body, model_cfg):
+        kwargs["toolConfig"] = _to_bedrock_tool_config(body)
     if model_cfg.prompt_caching:
         _apply_prompt_caching(kwargs)
     return kwargs
@@ -241,7 +244,56 @@ async def chat(body: dict, model_cfg: BedrockModelConfig) -> tuple[dict, int, in
     return data, prompt_tokens, completion_tokens, cache_read_tokens, cache_write_tokens
 
 
+async def _fake_stream(body: dict, model_cfg: BedrockModelConfig, usage_holder: dict) -> AsyncIterator[str]:
+    # Fallback for models that reject tool use combined with ConverseStream:
+    # do a normal blocking call and replay it as a single-shot SSE stream so
+    # the client still gets the streaming response shape it asked for.
+    data, prompt_tokens, completion_tokens, cache_read_tokens, cache_write_tokens = await chat(body, model_cfg)
+    usage_holder["prompt_tokens"] = prompt_tokens
+    usage_holder["completion_tokens"] = completion_tokens
+    usage_holder["cache_read_tokens"] = cache_read_tokens
+    usage_holder["cache_write_tokens"] = cache_write_tokens
+
+    choice = data["choices"][0]
+    message = choice["message"]
+
+    def chunk(delta: dict, finish_reason: str | None = None) -> str:
+        payload = {
+            "id": data["id"],
+            "object": "chat.completion.chunk",
+            "created": data["created"],
+            "model": data["model"],
+            "choices": [{"index": 0, "delta": delta, "finish_reason": finish_reason}],
+        }
+        return f"data: {json.dumps(payload)}\n\n"
+
+    yield chunk({"role": "assistant"})
+    if message.get("content"):
+        yield chunk({"content": message["content"]})
+    if message.get("tool_calls"):
+        yield chunk(
+            {
+                "tool_calls": [
+                    {
+                        "index": index,
+                        "id": call["id"],
+                        "type": "function",
+                        "function": call["function"],
+                    }
+                    for index, call in enumerate(message["tool_calls"])
+                ]
+            }
+        )
+    yield chunk({}, choice["finish_reason"])
+    yield "data: [DONE]\n\n"
+
+
 async def chat_stream(body: dict, model_cfg: BedrockModelConfig, usage_holder: dict) -> AsyncIterator[str]:
+    if not model_cfg.supports_tool_streaming and _wants_tool_config(body, model_cfg):
+        async for sse_chunk in _fake_stream(body, model_cfg, usage_holder):
+            yield sse_chunk
+        return
+
     loop = asyncio.get_running_loop()
     q: queue.SimpleQueue = queue.SimpleQueue()
     sentinel = object()

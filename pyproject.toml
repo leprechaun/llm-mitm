@@ -18,3 +18,8 @@ dev = [
     "pytest>=9.1.1",
     "ruff>=0.17.0",
 ]
+
+[tool.pytest.ini_options]
+# This is a flat (non-packaged) layout, so without this `uv run pytest`
+# can't import llm_mitm -- only `uv run python -m pytest` could.
+pythonpath = ["."]

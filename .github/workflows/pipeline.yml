@@ -44,7 +44,7 @@ jobs:
         run: uv run ruff check
 
       - name: Run tests
-        run: uv run python -m pytest -v tests/
+        run: uv run pytest -v tests/
 
   build-and-push:
     needs: test
