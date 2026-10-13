@@ -1,15 +1,19 @@
 from __future__ import annotations
 
 import asyncio
+import base64
 import json
 import queue
+import re
 import threading
 import time
 import uuid
 from collections.abc import AsyncIterator
 from typing import Any
+from urllib.parse import urlparse
 
 import boto3
+import httpx
 
 from llm_mitm.config import BedrockModelConfig
 
@@ -21,6 +25,12 @@ _STOP_REASON_MAP = {
     "content_filtered": "content_filter",
 }
 
+_DATA_URI_RE = re.compile(r"^data:image/(?P<fmt>[\w.+-]+);base64,(?P<data>.+)$", re.DOTALL)
+_IMAGE_FORMAT_ALIASES = {"jpg": "jpeg"}
+# Formats Bedrock Converse actually accepts for an "image" content block.
+_SUPPORTED_IMAGE_FORMATS = {"png", "jpeg", "gif", "webp"}
+_IMAGE_FETCH_TIMEOUT = httpx.Timeout(30.0)
+
 
 def _client(region: str | None):
     return boto3.client("bedrock-runtime", region_name=region)
@@ -30,6 +40,59 @@ def _content_text(content: str | list[dict] | None) -> str:
     if isinstance(content, list):
         return "".join(part.get("text", "") for part in content if part.get("type") == "text")
     return content or ""
+
+
+def _normalize_image_format(fmt: str) -> str:
+    fmt = _IMAGE_FORMAT_ALIASES.get(fmt.lower(), fmt.lower())
+    if fmt not in _SUPPORTED_IMAGE_FORMATS:
+        raise ValueError(
+            f"unsupported image format '{fmt}' for Bedrock (supported: {sorted(_SUPPORTED_IMAGE_FORMATS)})"
+        )
+    return fmt
+
+
+def _image_format_from_content_type(content_type: str) -> str:
+    media_type = content_type.split(";")[0].strip()
+    return media_type.split("/")[-1] if "/" in media_type else ""
+
+
+def _image_block_from_url(url: str) -> dict:
+    # OpenAI vision clients send either a data: URI (the image embedded
+    # inline) or a plain http(s) URL (fetched here, since Bedrock's image
+    # block only accepts raw bytes, not a remote URL).
+    match = _DATA_URI_RE.match(url)
+    if match:
+        image_format = _normalize_image_format(match.group("fmt"))
+        image_bytes = base64.b64decode(match.group("data"))
+    else:
+        response = httpx.get(url, timeout=_IMAGE_FETCH_TIMEOUT)
+        response.raise_for_status()
+        image_bytes = response.content
+        fmt_guess = _image_format_from_content_type(response.headers.get("content-type", ""))
+        if not fmt_guess:
+            path = urlparse(url).path
+            fmt_guess = path.rsplit(".", 1)[-1] if "." in path else ""
+        image_format = _normalize_image_format(fmt_guess)
+    return {"image": {"format": image_format, "source": {"bytes": image_bytes}}}
+
+
+def _content_blocks(content: str | list[dict] | None) -> list[dict]:
+    if content is None:
+        return []
+    if isinstance(content, str):
+        return [{"text": content}] if content else []
+    blocks: list[dict] = []
+    for part in content:
+        part_type = part.get("type")
+        if part_type == "text":
+            text = part.get("text", "")
+            if text:
+                blocks.append({"text": text})
+        elif part_type == "image_url":
+            url = part.get("image_url", {}).get("url", "")
+            if url:
+                blocks.append(_image_block_from_url(url))
+    return blocks
 
 
 def _to_bedrock_messages(messages: list[dict]) -> tuple[list[dict], list[dict]]:
@@ -66,9 +129,8 @@ def _to_bedrock_messages(messages: list[dict]) -> tuple[list[dict], list[dict]]:
         if role not in ("user", "assistant"):
             continue
 
-        text = _content_text(message.get("content"))
-        if text:
-            turns.append((role, {"text": text}))
+        for block in _content_blocks(message.get("content")):
+            turns.append((role, block))
 
         if role == "assistant":
             for call in message.get("tool_calls") or []:
@@ -218,7 +280,8 @@ def _openai_response(
 
 async def chat(body: dict, model_cfg: BedrockModelConfig) -> tuple[dict, int, int, int, int]:
     client = _client(model_cfg.region)
-    kwargs = _converse_kwargs(body, model_cfg)
+    # Off the event loop: may do a blocking fetch for a remote image_url.
+    kwargs = await asyncio.to_thread(_converse_kwargs, body, model_cfg)
     response = await asyncio.to_thread(client.converse, **kwargs)
     content_blocks = response["output"]["message"]["content"]
     text = "".join(block.get("text", "") for block in content_blocks if "text" in block)
