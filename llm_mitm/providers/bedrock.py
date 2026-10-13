@@ -183,16 +183,22 @@ def _to_bedrock_tool_config(body: dict) -> dict | None:
     if not tool_specs:
         return None
 
+    # toolConfig must stay present whenever tools were defined, even for
+    # tool_choice "none" -- Bedrock rejects any request whose message history
+    # contains toolUse/toolResult blocks (i.e. a prior tool call) unless
+    # toolConfig is defined on *every* subsequent turn, including turns that
+    # aren't allowed to call a tool themselves. Bedrock's toolChoice has no
+    # "never call a tool" option (only auto/any/a named tool), so "none"
+    # degrades to the same as "auto" -- the model could in principle still
+    # choose to call a tool, but that's the best available mapping; the
+    # alternative (dropping toolConfig) is a hard validation error.
     tool_choice = body.get("tool_choice")
-    if tool_choice == "none":
-        return None
-
     config: dict[str, Any] = {"tools": tool_specs}
     if tool_choice == "required":
         config["toolChoice"] = {"any": {}}
     elif isinstance(tool_choice, dict) and tool_choice.get("type") == "function":
         config["toolChoice"] = {"tool": {"name": tool_choice["function"]["name"]}}
-    # "auto" (or unset) -> omit toolChoice, Bedrock defaults to auto
+    # "auto", "none", or unset -> omit toolChoice, Bedrock defaults to auto
     return config
 
 

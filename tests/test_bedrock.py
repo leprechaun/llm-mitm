@@ -115,12 +115,21 @@ def test_tool_config_named_choice():
     assert bedrock._to_bedrock_tool_config(body)["toolChoice"] == {"tool": {"name": "execute"}}
 
 
-def test_tool_config_none_disables_tools():
+def test_tool_config_none_keeps_tools_but_omits_tool_choice():
+    # Regression test for: "ValidationException: The toolConfig field must
+    # be defined when using toolUse and toolResult content blocks." Bedrock
+    # requires toolConfig whenever message history has prior tool use, even
+    # on a turn with tool_choice "none" -- and Bedrock has no "never call a
+    # tool" choice, so "none" degrades to omitting toolChoice (i.e. auto)
+    # rather than dropping toolConfig entirely.
     body = {
         "tools": [{"type": "function", "function": {"name": "execute", "parameters": {}}}],
         "tool_choice": "none",
     }
-    assert bedrock._to_bedrock_tool_config(body) is None
+    config = bedrock._to_bedrock_tool_config(body)
+    assert config is not None
+    assert config["tools"][0]["toolSpec"]["name"] == "execute"
+    assert "toolChoice" not in config
 
 
 def test_prompt_caching_inserts_cache_points():
@@ -351,6 +360,33 @@ def test_tools_dropped_entirely_when_model_does_not_support_them():
     }
     kwargs = bedrock._converse_kwargs(body, cfg)
     assert "toolConfig" not in kwargs
+
+
+def test_tool_choice_none_with_prior_tool_use_still_includes_tool_config():
+    # Full regression test for the real-world failure: an agent loop (e.g.
+    # opencode) resends history containing a completed tool call/result,
+    # with tool_choice "none" on the follow-up turn asking for a final
+    # answer. toolConfig must still be present or Bedrock rejects the call.
+    cfg = _cfg()
+    body = {
+        "model": "m",
+        "messages": [
+            {"role": "user", "content": "list files in /tmp"},
+            {
+                "role": "assistant",
+                "content": None,
+                "tool_calls": [
+                    {"id": "call_1", "type": "function", "function": {"name": "execute", "arguments": "{}"}}
+                ],
+            },
+            {"role": "tool", "tool_call_id": "call_1", "content": "file1.txt"},
+        ],
+        "tools": [{"type": "function", "function": {"name": "execute", "parameters": {}}}],
+        "tool_choice": "none",
+    }
+    kwargs = bedrock._converse_kwargs(body, cfg)
+    assert "toolConfig" in kwargs
+    assert "toolChoice" not in kwargs["toolConfig"]
 
 
 def test_image_data_uri_decoded_to_bedrock_image_block():

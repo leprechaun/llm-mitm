@@ -94,6 +94,14 @@ with tools transparently falls back to a blocking call replayed as a
 single-shot SSE stream, so the client still gets the response shape it asked
 for -- streaming without tools is unaffected.
 
+Note: Bedrock has no `tool_choice: "none"` equivalent (only auto / any /
+a named tool). If an agent client sends `tool_choice: "none"` on a turn
+whose history already contains a tool call, this still sends `toolConfig`
+with no `toolChoice` (i.e. behaves like "auto") -- Bedrock rejects the
+request outright otherwise ("toolConfig field must be defined when using
+toolUse and toolResult content blocks"), so this is the closest available
+mapping, not a strict "never call a tool" guarantee.
+
 Bedrock vision-capable models (e.g. Claude Haiku 5.5) accept images: send
 them the normal OpenAI way, as an `image_url` content part (either a
 `data:image/...;base64,...` URI, or a plain http(s) URL, which gets fetched
