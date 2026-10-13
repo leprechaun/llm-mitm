@@ -11,7 +11,6 @@ Prometheus metrics.
 - No authorization/authentication. Any bearer token is accepted and treated
   as an identity to track cost against; validating it is the job of a
   reverse proxy in front of this service.
-- No image/vision support yet.
 - No persistent usage database -- usage is a JSON line per request on stdout
   plus Prometheus counters/histograms. Point your log pipeline / Prometheus
   at it.
@@ -94,6 +93,13 @@ support tool use in streaming mode"). When that happens, a streaming request
 with tools transparently falls back to a blocking call replayed as a
 single-shot SSE stream, so the client still gets the response shape it asked
 for -- streaming without tools is unaffected.
+
+Bedrock vision-capable models (e.g. Claude Haiku 5.5) accept images: send
+them the normal OpenAI way, as an `image_url` content part (either a
+`data:image/...;base64,...` URI, or a plain http(s) URL, which gets fetched
+and inlined as bytes since Bedrock's image block doesn't accept remote
+URLs). Supported formats: PNG, JPEG, GIF, WEBP. Ollama is unaffected --
+its requests are passed through to Ollama's own endpoint as-is.
 
 Add as many entries as you like, mixing providers freely. AWS credentials
 for Bedrock are picked up the normal boto3 way (env vars, `~/.aws/credentials`,
