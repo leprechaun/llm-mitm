@@ -1,4 +1,4 @@
-# llm-mitm
+# llm-mitm -- LLM Man-in-the-Middle
 
 A tiny, self-hosted replacement for the parts of [litellm](https://github.com/BerriAI/litellm)
 actually needed here: an OpenAI-compatible `/v1/chat/completions` endpoint that
