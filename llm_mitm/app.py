@@ -77,10 +77,17 @@ async def chat_completions(request: Request):
         }
 
         async def generate():
-            status = "ok"
+            # Only ever becomes "ok" once the stream actually finishes below.
+            # If the client/gateway disconnects (e.g. a route timeout),
+            # Starlette tears this generator down via GeneratorExit --
+            # a BaseException, which `except Exception` below does NOT
+            # catch -- so status must default to something other than "ok",
+            # or an abandoned request would be misrecorded as a success.
+            status = "cancelled"
             try:
                 async for sse_chunk in provider.chat_stream(body, provider_cfg, usage_holder):
                     yield sse_chunk
+                status = "ok"
             except Exception as exc:  # closed out as a terminal SSE error event below
                 status = "error"
                 logger.exception("streaming chat completion failed (model=%s)", model_name)

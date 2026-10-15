@@ -110,6 +110,14 @@ httpRoute:
             type: PathPrefix
             value: /
       # filters: []
+      # LLM responses routinely take longer than most gateways' default
+      # request timeout (often as low as 15s) to produce a first token --
+      # especially streaming/reasoning-heavy models. Without this, the
+      # gateway truncates the response mid-stream (Envoy: response_flags
+      # "UT") well before llm-mitm or the model actually finishes.
+      timeouts:
+        request: 300s
+        backendRequest: 300s
 
 resources: {}
   # We usually recommend not to specify default resources and to leave this as a conscious

@@ -400,6 +400,7 @@ async def chat_stream(body: dict, model_cfg: BedrockModelConfig, usage_holder: d
 
     yield chunk({"role": "assistant"})
 
+    saw_message_stop = False
     while True:
         event = await loop.run_in_executor(None, q.get)
         if event is sentinel:
@@ -449,7 +450,19 @@ async def chat_stream(body: dict, model_cfg: BedrockModelConfig, usage_holder: d
             usage_holder["cache_read_tokens"] = usage.get("cacheReadInputTokens", 0)
             usage_holder["cache_write_tokens"] = usage.get("cacheWriteInputTokens", 0)
         elif "messageStop" in event:
+            saw_message_stop = True
             finish_reason = _STOP_REASON_MAP.get(event["messageStop"].get("stopReason"), "stop")
             yield chunk({}, finish_reason)
+
+    if not saw_message_stop:
+        # The stream ended with no error and no messageStop -- Bedrock
+        # (or something between us and it) silently closed the connection
+        # before the model produced any output. Surface this as a real
+        # error instead of recording a clean, empty "ok" completion.
+        raise RuntimeError(
+            "Bedrock stream ended without a messageStop event (no content, "
+            "no error) -- likely an idle/read timeout before the model "
+            "produced any output."
+        )
 
     yield "data: [DONE]\n\n"

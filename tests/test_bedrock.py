@@ -452,3 +452,30 @@ def test_text_only_message_unaffected_by_image_handling():
     body = {"model": "m", "messages": [{"role": "user", "content": "just text"}]}
     kwargs = bedrock._converse_kwargs(body, cfg)
     assert kwargs["messages"][0]["content"] == [{"text": "just text"}]
+
+
+def test_chat_stream_raises_when_no_message_stop_ever_arrives():
+    # Regression test for a real production symptom: Bedrock's stream
+    # silently ended (no error raised) with zero content and no messageStop
+    # event -- previously this was treated as a clean, empty "ok" completion
+    # (0 tokens, status=ok) instead of the anomaly it actually is.
+    cfg = _cfg()
+    body = {"model": "m", "messages": [{"role": "user", "content": "hi"}]}
+    fake_client = MagicMock()
+    fake_client.converse_stream.return_value = {"stream": iter([])}
+
+    async def run():
+        usage_holder = {
+            "prompt_tokens": 0,
+            "completion_tokens": 0,
+            "cache_read_tokens": 0,
+            "cache_write_tokens": 0,
+        }
+        chunks = []
+        with patch.object(bedrock, "_client", return_value=fake_client):
+            async for sse in bedrock.chat_stream(body, cfg, usage_holder):
+                chunks.append(sse)
+        return chunks
+
+    with pytest.raises(RuntimeError, match="messageStop"):
+        asyncio.run(run())
