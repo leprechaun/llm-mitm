@@ -162,3 +162,22 @@ Each request emits:
 Nothing is persisted to a database today; wiring either log line or metrics
 into a store of your choice is a natural next step if you need historical
 querying beyond what Prometheus retains.
+
+## Logging
+
+By default (local dev), general application/uvicorn logs are Python's
+normal human-readable textual output. Set `server.json_logs: true` in
+`config.yaml` to switch every log line (ours and uvicorn's access/error
+logs) to compact JSON on stdout instead -- deliberately with no timestamp
+field, since a k8s log collector already stamps arrival time and an
+app-side one would just be redundant. The Helm chart sets this to `true`
+by default.
+
+`server.log_level` (default `INFO`; one of `DEBUG`/`INFO`/`WARNING`/
+`ERROR`/`CRITICAL`) controls the threshold for these same logs -- ours and
+uvicorn's -- regardless of `json_logs`.
+
+This is separate from the `llm_mitm.usage` logger described above, which
+is always JSON regardless of this setting -- it's structured event data
+meant for cost tracking, not a human-facing log line, and its own `ts`
+field is the request's timestamp (data), not a logging artifact.

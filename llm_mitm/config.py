@@ -72,6 +72,13 @@ class ServerConfig(BaseModel):
     # logs, Prometheus key_id label). Disable to see raw keys in those
     # places instead -- not recommended outside trusted/local setups.
     hash_api_keys: bool = True
+    # False (default): keep Python/uvicorn's normal human-readable textual
+    # logs, for local dev. True: switch every log line (ours + uvicorn's) to
+    # compact JSON on stdout with no timestamp field -- a k8s log collector
+    # already stamps arrival time, so an app-side one is redundant noise.
+    json_logs: bool = False
+    # Applies to our own logger and uvicorn's, regardless of json_logs.
+    log_level: Literal["DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"] = "INFO"
 
 
 class AppConfig(BaseModel):

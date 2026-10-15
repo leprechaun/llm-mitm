@@ -44,6 +44,9 @@ config:
   server:
     host: 0.0.0.0
     port: 4000
+    # JSON logs on stdout, no timestamp field -- the cluster's log
+    # collector already stamps arrival time.
+    json_logs: true
   models: []
 
 # Extra container env vars, e.g. AWS credentials if not using IRSA:
