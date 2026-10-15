@@ -1,12 +1,10 @@
 from __future__ import annotations
 
-import copy
 import json
 import logging
 import sys
-from typing import Any
 
-import uvicorn.config
+import uvicorn.logging
 
 _UVICORN_LOGGERS = ("uvicorn", "uvicorn.error", "uvicorn.access")
 
@@ -23,40 +21,30 @@ class _JsonFormatter(logging.Formatter):
         return json.dumps(payload)
 
 
-def configure_logging(json_logs: bool, log_level: str) -> dict[str, Any] | None:
-    """Set up stdlib logging and return the log_config to pass to uvicorn.run().
+def configure_logging(json_logs: bool, log_level: str) -> None:
+    """Route every logger (ours, uvicorn's, the usage logger) through one
+    shared stdout handler, so every log line -- app logs, uvicorn's access
+    log, usage/cost events -- looks the same rather than each picking its
+    own format.
 
-    log_level applies to our own logger and uvicorn's either way.
-
-    json_logs=False: keep uvicorn's normal human-readable textual
-    formatters -- returns a copy of uvicorn's own log config with the level
-    overridden, since uvicorn.run() would otherwise reset it back to INFO.
-    json_logs=True: route every logger (ours and uvicorn's) through one
-    JSON-on-stdout handler, deliberately without a timestamp field. Returns
-    None so uvicorn.run() skips its own dictConfig entirely, which would
-    otherwise overwrite the handlers just set up here.
+    json_logs=False: a plain textual formatter (uvicorn's own style).
+    json_logs=True: compact JSON, deliberately with no timestamp field --
+    a k8s log collector already stamps arrival time.
     """
     level = log_level.upper()
 
-    logging.getLogger().setLevel(level)
-    logging.getLogger("llm_mitm").setLevel(level)
-
-    if not json_logs:
-        uvicorn_log_config = copy.deepcopy(uvicorn.config.LOGGING_CONFIG)
-        for name in _UVICORN_LOGGERS:
-            uvicorn_log_config["loggers"].setdefault(name, {})["level"] = level
-        return uvicorn_log_config
-
     handler = logging.StreamHandler(sys.stdout)
-    handler.setFormatter(_JsonFormatter())
+    if json_logs:
+        handler.setFormatter(_JsonFormatter())
+    else:
+        handler.setFormatter(uvicorn.logging.DefaultFormatter("%(levelprefix)s %(message)s"))
 
     root = logging.getLogger()
     root.handlers = [handler]
+    root.setLevel(level)
 
     for name in _UVICORN_LOGGERS:
         uv_logger = logging.getLogger(name)
         uv_logger.handlers = [handler]
         uv_logger.setLevel(level)
         uv_logger.propagate = False
-
-    return None

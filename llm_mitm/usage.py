@@ -2,19 +2,18 @@ from __future__ import annotations
 
 import json
 import logging
-import sys
 import time
 from dataclasses import asdict, dataclass
 
 from llm_mitm.metrics import COST_USD, REQUEST_DURATION, REQUESTS, TOKENS
 
 usage_logger = logging.getLogger("llm_mitm.usage")
+# Pinned to INFO regardless of the app's configured log_level -- usage
+# events are accounting data, not diagnostic noise, so turning down general
+# log verbosity must never silence them. Uses the shared handler/formatter
+# set up by logging_setup.configure_logging() (propagates to root), so it
+# renders the same way as every other log line instead of its own format.
 usage_logger.setLevel(logging.INFO)
-usage_logger.propagate = False
-if not usage_logger.handlers:
-    _handler = logging.StreamHandler(sys.stdout)
-    _handler.setFormatter(logging.Formatter("%(message)s"))
-    usage_logger.addHandler(_handler)
 
 
 @dataclass

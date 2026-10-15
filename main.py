@@ -8,12 +8,15 @@ from llm_mitm.logging_setup import configure_logging
 
 def main():
     config = load_config(os.environ.get("LLM_MITM_CONFIG", "config.yaml"))
-    log_config = configure_logging(config.server.json_logs, config.server.log_level)
+    configure_logging(config.server.json_logs, config.server.log_level)
     uvicorn.run(
         "llm_mitm.app:app",
         host=config.server.host,
         port=config.server.port,
-        log_config=log_config,
+        # We've already wired every logger uvicorn cares about ourselves --
+        # None skips uvicorn's own dictConfig call, which would otherwise
+        # overwrite the handlers configure_logging() just set up.
+        log_config=None,
     )
 
 

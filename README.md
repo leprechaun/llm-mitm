@@ -177,7 +177,9 @@ by default.
 `ERROR`/`CRITICAL`) controls the threshold for these same logs -- ours and
 uvicorn's -- regardless of `json_logs`.
 
-This is separate from the `llm_mitm.usage` logger described above, which
-is always JSON regardless of this setting -- it's structured event data
-meant for cost tracking, not a human-facing log line, and its own `ts`
-field is the request's timestamp (data), not a logging artifact.
+The `llm_mitm.usage` logger described above goes through this exact same
+handler and formatter, so a usage line looks like every other log line
+(textual locally, JSON in `json_logs` mode) rather than having its own
+separate format -- the JSON payload is just its message text. It's pinned
+to `INFO` independent of `server.log_level`, though: cost-tracking events
+must never go dark just because you turned down general log verbosity.
