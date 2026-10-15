@@ -3,7 +3,7 @@ import logging
 import sys
 
 import llm_mitm.usage  # noqa: F401 -- import-time side effect: pins usage_logger to INFO
-from llm_mitm.logging_setup import _JsonFormatter, configure_logging
+from llm_mitm.logging_setup import JSON_FIELDS, _JsonFormatter, configure_logging
 
 
 def test_json_formatter_has_no_timestamp_field():
@@ -19,6 +19,40 @@ def test_json_formatter_includes_exception_traceback():
         record = logging.LogRecord("llm_mitm", logging.ERROR, "x.py", 1, "failed", None, sys.exc_info())
     parsed = json.loads(_JsonFormatter().format(record))
     assert "RuntimeError: boom" in parsed["exception"]
+
+
+def test_json_formatter_promotes_marked_extra_fields_to_top_level():
+    # Regression test for: usage events arriving as a nested, escaped JSON
+    # string inside "message" instead of flat, queryable top-level fields.
+    logger = logging.getLogger("llm_mitm.usage")
+    record = logger.makeRecord(
+        "llm_mitm.usage",
+        logging.INFO,
+        "x.py",
+        1,
+        '{"model": "claude-haiku-5.5", "cost_usd": 0.0001}',
+        (),
+        None,
+        extra={JSON_FIELDS: {"model": "claude-haiku-5.5", "cost_usd": 0.0001}},
+    )
+    parsed = json.loads(_JsonFormatter().format(record))
+    assert parsed == {
+        "level": "INFO",
+        "logger": "llm_mitm.usage",
+        "model": "claude-haiku-5.5",
+        "cost_usd": 0.0001,
+    }
+    assert "message" not in parsed
+
+
+def test_json_formatter_ignores_unrelated_extra_attributes():
+    # uvicorn stashes its own extras (e.g. color_message, for its colorized
+    # terminal formatter) that have nothing to do with us -- those must not
+    # leak in and must not suppress the real message.
+    record = logging.LogRecord("uvicorn.error", logging.INFO, "x.py", 1, "Started server process [%d]", (123,), None)
+    record.color_message = "Started server process [\x1b[36m%d\x1b[0m]"
+    parsed = json.loads(_JsonFormatter().format(record))
+    assert parsed == {"level": "INFO", "logger": "uvicorn.error", "message": "Started server process [123]"}
 
 
 def _reset_logging_state():

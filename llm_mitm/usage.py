@@ -5,6 +5,7 @@ import logging
 import time
 from dataclasses import asdict, dataclass
 
+from llm_mitm.logging_setup import JSON_FIELDS
 from llm_mitm.metrics import COST_USD, REQUEST_DURATION, REQUESTS, TOKENS
 
 usage_logger = logging.getLogger("llm_mitm.usage")
@@ -37,7 +38,12 @@ class UsageEvent:
 
 
 def record_usage(event: UsageEvent) -> None:
-    usage_logger.info(json.dumps(asdict(event)))
+    fields = asdict(event)
+    # extra= attaches the real fields onto the LogRecord so the JSON
+    # formatter can promote them to top-level keys instead of nesting them
+    # as an escaped string; the JSON message text itself is just for
+    # textual/local-mode readability.
+    usage_logger.info(json.dumps(fields), extra={JSON_FIELDS: fields})
 
     REQUESTS.labels(event.model, event.provider, event.key_id, event.status).inc()
     TOKENS.labels(event.model, event.provider, event.key_id, "prompt").inc(event.prompt_tokens)

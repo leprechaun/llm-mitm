@@ -9,13 +9,22 @@ import uvicorn.logging
 _UVICORN_LOGGERS = ("uvicorn", "uvicorn.error", "uvicorn.access")
 
 
+# Opt-in marker for extra= fields that should be promoted to top-level JSON
+# keys (e.g. usage_logger.info(..., extra={JSON_FIELDS: asdict(event)})).
+# Deliberately not "any attribute the record happens to carry" -- uvicorn
+# itself stashes its own extras (e.g. color_message, for its colorized
+# terminal formatter) that have nothing to do with us and must not leak in.
+JSON_FIELDS = "_llm_mitm_json_fields"
+
+
 class _JsonFormatter(logging.Formatter):
     def format(self, record: logging.LogRecord) -> str:
-        payload = {
-            "level": record.levelname,
-            "logger": record.name,
-            "message": record.getMessage(),
-        }
+        payload = {"level": record.levelname, "logger": record.name}
+        extra = getattr(record, JSON_FIELDS, None)
+        if extra is not None:
+            payload.update(extra)
+        else:
+            payload["message"] = record.getMessage()
         if record.exc_info:
             payload["exception"] = self.formatException(record.exc_info)
         return json.dumps(payload)
