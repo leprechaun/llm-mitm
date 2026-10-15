@@ -26,7 +26,7 @@ def test_mid_stream_failure_closes_cleanly_instead_of_aborting():
         client.stream(
             "POST",
             "/v1/chat/completions",
-            json={"model": "test-model", "stream": True, "messages": [{"role": "user", "content": "hi"}]},
+            json={"model": "ollama/test-model", "stream": True, "messages": [{"role": "user", "content": "hi"}]},
         ) as response,
     ):
         assert response.status_code == 200

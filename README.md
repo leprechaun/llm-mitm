@@ -25,7 +25,7 @@ server:
   port: 4000
 
 models:
-  - name: claude-sonnet          # the "model" clients ask for
+  - name: claude-sonnet          # combined with provider below -> "bedrock/claude-sonnet"
     provider: bedrock
     bedrock:
       model_id: anthropic.claude-3-5-sonnet-20241022-v2:0
@@ -41,6 +41,11 @@ models:
       input_cost_per_1m: 0
       output_cost_per_1m: 0
 ```
+
+Clients always refer to a model as `<provider>/<name>` -- e.g.
+`bedrock/claude-sonnet` and `ollama/llama3` for the config above, in both
+`GET /v1/models` and the `"model"` field of `/v1/chat/completions` requests.
+This is the only accepted form; the bare `name` alone does not resolve.
 
 Some models (e.g. long-context Anthropic models on Bedrock) charge a higher
 rate once the prompt exceeds a size threshold. Express that with `tiers`:
@@ -149,7 +154,7 @@ Each request emits:
 
 1. A JSON line on stdout via the `llm_mitm.usage` logger:
    ```json
-   {"key_id": "...", "model": "claude-sonnet", "provider": "bedrock", "prompt_tokens": 123, "completion_tokens": 45, "cost_usd": 0.0012, "duration_s": 1.3, "status": "ok", "stream": false, "cache_read_tokens": 0, "cache_write_tokens": 0, "ts": 1760169600.0}
+   {"key_id": "...", "model": "bedrock/claude-sonnet", "provider": "bedrock", "prompt_tokens": 123, "completion_tokens": 45, "cost_usd": 0.0012, "duration_s": 1.3, "status": "ok", "stream": false, "cache_read_tokens": 0, "cache_write_tokens": 0, "ts": 1760169600.0}
    ```
 2. Updates to Prometheus counters/histograms on `/metrics`:
    `llm_mitm_requests_total`, `llm_mitm_tokens_total`,

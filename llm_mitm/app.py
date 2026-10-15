@@ -17,7 +17,7 @@ from llm_mitm.usage import UsageEvent, record_usage
 
 CONFIG_PATH = os.environ.get("LLM_MITM_CONFIG", "config.yaml")
 config = load_config(CONFIG_PATH)
-MODELS = {m.name: m for m in config.models}
+MODELS = {m.id: m for m in config.models}
 PROVIDERS = {"bedrock": bedrock, "ollama": ollama}
 
 app = FastAPI(title="llm-mitm")
@@ -46,8 +46,8 @@ async def list_models() -> dict:
     return {
         "object": "list",
         "data": [
-            {"id": name, "object": "model", "owned_by": entry.provider}
-            for name, entry in MODELS.items()
+            {"id": model_id, "object": "model", "owned_by": entry.provider}
+            for model_id, entry in MODELS.items()
         ],
     }
 

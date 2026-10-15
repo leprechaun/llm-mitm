@@ -16,7 +16,7 @@ def test_list_models():
     assert response.status_code == 200
     body = response.json()
     assert body["object"] == "list"
-    assert {"id": "test-model", "object": "model", "owned_by": "ollama"} in body["data"]
+    assert {"id": "ollama/test-model", "object": "model", "owned_by": "ollama"} in body["data"]
 
 
 def test_chat_completion_unknown_model():
@@ -28,5 +28,5 @@ def test_chat_completion_unknown_model():
 
 
 def test_chat_completion_missing_messages():
-    response = client.post("/v1/chat/completions", json={"model": "test-model"})
+    response = client.post("/v1/chat/completions", json={"model": "ollama/test-model"})
     assert response.status_code == 400

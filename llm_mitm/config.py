@@ -58,6 +58,14 @@ class ModelEntry(BaseModel):
     ollama: OllamaModelConfig | None = None
 
     @property
+    def id(self) -> str:
+        # The only identifier clients use -- in /v1/models and as the
+        # "model" field in requests. "name" in config.yaml is just the
+        # short local label; this disambiguates models that share a name
+        # across providers and makes the backing provider explicit.
+        return f"{self.provider}/{self.name}"
+
+    @property
     def provider_config(self) -> BedrockModelConfig | OllamaModelConfig:
         cfg = self.bedrock if self.provider == "bedrock" else self.ollama
         if cfg is None:
