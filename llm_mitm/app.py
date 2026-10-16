@@ -31,6 +31,22 @@ def _openai_error(message: str, error_type: str, status_code: int) -> JSONRespon
     )
 
 
+def _sse_chunk_has_token(sse_chunk: str) -> bool:
+    # True for the first chunk that carries actual generated output -- not
+    # the synthetic role-only opener some providers send immediately, and
+    # not the trailing finish_reason/[DONE] chunks. Used to time TTFT from
+    # something a client would actually perceive as "the model responded",
+    # rather than from when the stream merely opened.
+    if not sse_chunk.startswith("data: ") or sse_chunk.strip() == "data: [DONE]":
+        return False
+    try:
+        payload = json.loads(sse_chunk[len("data: ") :])
+    except json.JSONDecodeError:
+        return False
+    delta = payload.get("choices", [{}])[0].get("delta", {})
+    return bool(delta.get("content")) or bool(delta.get("tool_calls"))
+
+
 @app.get("/healthz")
 async def healthz() -> dict:
     return {"status": "ok"}
@@ -85,8 +101,11 @@ async def chat_completions(request: Request):
             # catch -- so status must default to something other than "ok",
             # or an abandoned request would be misrecorded as a success.
             status = "cancelled"
+            ttft_s: float | None = None
             try:
                 async for sse_chunk in provider.chat_stream(body, provider_cfg, usage_holder):
+                    if ttft_s is None and _sse_chunk_has_token(sse_chunk):
+                        ttft_s = time.monotonic() - start
                     yield sse_chunk
                 status = "ok"
             except Exception as exc:  # closed out as a terminal SSE error event below
@@ -113,6 +132,7 @@ async def chat_completions(request: Request):
                         cache_read_tokens=usage_holder["cache_read_tokens"],
                         cache_write_tokens=usage_holder["cache_write_tokens"],
                         service_tier=usage_holder["service_tier"],
+                        ttft_s=ttft_s,
                         cost_usd=cost,
                         duration_s=time.monotonic() - start,
                         status=status,

@@ -22,3 +22,14 @@ REQUEST_DURATION = Histogram(
     "Request duration in seconds",
     ["model", "provider"],
 )
+TIME_TO_FIRST_TOKEN = Histogram(
+    "llm_mitm_time_to_first_token_seconds",
+    "Time from request start to the first streamed token (streaming requests only)",
+    ["model", "provider"],
+)
+OUTPUT_TOKENS_PER_SECOND = Histogram(
+    "llm_mitm_output_tokens_per_second",
+    "Output token generation rate",
+    ["model", "provider"],
+    buckets=(5, 10, 20, 30, 50, 75, 100, 150, 200, 300, 500),
+)
