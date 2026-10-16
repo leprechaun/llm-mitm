@@ -74,6 +74,7 @@ async def chat_completions(request: Request):
             "completion_tokens": 0,
             "cache_read_tokens": 0,
             "cache_write_tokens": 0,
+            "service_tier": None,
         }
 
         async def generate():
@@ -100,6 +101,7 @@ async def chat_completions(request: Request):
                     usage_holder["completion_tokens"],
                     usage_holder["cache_read_tokens"],
                     usage_holder["cache_write_tokens"],
+                    usage_holder["service_tier"],
                 )
                 record_usage(
                     UsageEvent(
@@ -110,6 +112,7 @@ async def chat_completions(request: Request):
                         completion_tokens=usage_holder["completion_tokens"],
                         cache_read_tokens=usage_holder["cache_read_tokens"],
                         cache_write_tokens=usage_holder["cache_write_tokens"],
+                        service_tier=usage_holder["service_tier"],
                         cost_usd=cost,
                         duration_s=time.monotonic() - start,
                         status=status,
@@ -120,8 +123,8 @@ async def chat_completions(request: Request):
         return StreamingResponse(generate(), media_type="text/event-stream")
 
     try:
-        data, prompt_tokens, completion_tokens, cache_read_tokens, cache_write_tokens = await provider.chat(
-            body, provider_cfg
+        data, prompt_tokens, completion_tokens, cache_read_tokens, cache_write_tokens, service_tier = (
+            await provider.chat(body, provider_cfg)
         )
     except Exception as exc:  # noqa: BLE001 -- turned into a clean upstream_error response below
         record_usage(
@@ -139,7 +142,9 @@ async def chat_completions(request: Request):
         )
         return _openai_error(str(exc), "upstream_error", 502)
 
-    cost = compute_cost(provider_cfg, prompt_tokens, completion_tokens, cache_read_tokens, cache_write_tokens)
+    cost = compute_cost(
+        provider_cfg, prompt_tokens, completion_tokens, cache_read_tokens, cache_write_tokens, service_tier
+    )
     record_usage(
         UsageEvent(
             key_id=key_id,
@@ -149,6 +154,7 @@ async def chat_completions(request: Request):
             completion_tokens=completion_tokens,
             cache_read_tokens=cache_read_tokens,
             cache_write_tokens=cache_write_tokens,
+            service_tier=service_tier,
             cost_usd=cost,
             duration_s=time.monotonic() - start,
             status="ok",

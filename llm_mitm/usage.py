@@ -30,6 +30,11 @@ class UsageEvent:
     stream: bool
     cache_read_tokens: int = 0
     cache_write_tokens: int = 0
+    # Bedrock-only: which service tier actually served the request (e.g.
+    # "flex", "priority", "default"), or None for providers/models that
+    # don't have this concept. Logged for billing reconciliation -- not a
+    # Prometheus label, to avoid multiplying metric cardinality.
+    service_tier: str | None = None
     ts: float = 0.0
 
     def __post_init__(self) -> None:

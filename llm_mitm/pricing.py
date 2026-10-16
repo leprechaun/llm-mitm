@@ -9,6 +9,7 @@ def compute_cost(
     completion_tokens: int,
     cache_read_tokens: int = 0,
     cache_write_tokens: int = 0,
+    service_tier: str | None = None,
 ) -> float:
     input_rate = provider_config.input_cost_per_1m
     output_rate = provider_config.output_cost_per_1m
@@ -25,9 +26,18 @@ def compute_cost(
             cache_read_rate = tier.cache_read_cost_per_1m
             cache_write_rate = tier.cache_write_cost_per_1m
 
-    return (
+    cost = (
         prompt_tokens / 1_000_000 * input_rate
         + completion_tokens / 1_000_000 * output_rate
         + cache_read_tokens / 1_000_000 * cache_read_rate
         + cache_write_tokens / 1_000_000 * cache_write_rate
     )
+
+    # Bedrock bills whatever tier actually served the request (echoed back
+    # in the response), which can differ from the tier that was requested --
+    # e.g. a "flex" request falls back to Standard pricing if flex capacity
+    # isn't available.
+    if service_tier == "flex":
+        cost *= provider_config.flex_discount
+
+    return cost

@@ -193,7 +193,7 @@ def test_chat_extracts_tool_calls():
     fake_client = MagicMock()
     fake_client.converse.return_value = fake_response
     with patch.object(bedrock, "_client", return_value=fake_client):
-        data, prompt_tokens, completion_tokens, cache_read, cache_write = asyncio.run(
+        data, prompt_tokens, completion_tokens, cache_read, cache_write, service_tier = asyncio.run(
             bedrock.chat({"model": "m", "messages": [{"role": "user", "content": "hi"}]}, cfg)
         )
     message = data["choices"][0]["message"]
@@ -206,6 +206,7 @@ def test_chat_extracts_tool_calls():
         }
     ]
     assert (prompt_tokens, completion_tokens, cache_read, cache_write) == (42, 13, 0, 0)
+    assert service_tier is None
 
 
 def test_chat_extracts_cache_tokens():
@@ -223,7 +224,7 @@ def test_chat_extracts_cache_tokens():
     fake_client = MagicMock()
     fake_client.converse.return_value = fake_response
     with patch.object(bedrock, "_client", return_value=fake_client):
-        _, prompt_tokens, completion_tokens, cache_read, cache_write = asyncio.run(
+        _, prompt_tokens, completion_tokens, cache_read, cache_write, _ = asyncio.run(
             bedrock.chat({"model": "m", "messages": [{"role": "user", "content": "hi"}]}, cfg)
         )
     assert (prompt_tokens, completion_tokens, cache_read, cache_write) == (20, 5, 5000, 300)
@@ -273,6 +274,7 @@ def test_chat_stream_translates_text_and_tool_calls():
         "completion_tokens": 13,
         "cache_read_tokens": 0,
         "cache_write_tokens": 0,
+        "service_tier": None,
     }
 
     payloads = [json.loads(c[len("data: ") :]) for c in chunks if c.strip() != "data: [DONE]"]
@@ -339,6 +341,7 @@ def test_chat_stream_falls_back_to_blocking_call_when_tool_streaming_unsupported
         "completion_tokens": 4,
         "cache_read_tokens": 0,
         "cache_write_tokens": 0,
+        "service_tier": None,
     }
     assert chunks[-1] == "data: [DONE]\n\n"
 
@@ -349,6 +352,69 @@ def test_chat_stream_falls_back_to_blocking_call_when_tool_streaming_unsupported
     assert tool_call["id"] == "call_abc"
     assert json.loads(tool_call["function"]["arguments"]) == {"cmd": "ls /tmp"}
     assert payloads[-1]["choices"][0]["finish_reason"] == "tool_calls"
+
+
+def test_service_tier_omitted_by_default():
+    cfg = _cfg()
+    body = {"model": "m", "messages": [{"role": "user", "content": "hi"}]}
+    kwargs = bedrock._converse_kwargs(body, cfg)
+    assert "serviceTier" not in kwargs
+
+
+def test_service_tier_included_when_configured():
+    cfg = _cfg(service_tier="flex")
+    body = {"model": "m", "messages": [{"role": "user", "content": "hi"}]}
+    kwargs = bedrock._converse_kwargs(body, cfg)
+    assert kwargs["serviceTier"] == {"type": "flex"}
+
+
+def test_chat_extracts_resolved_service_tier():
+    # Bedrock echoes back whichever tier actually served the request, which
+    # can differ from what was requested (e.g. "flex" falling back to
+    # Standard) -- billing must read this, not the request config.
+    cfg = _cfg(service_tier="flex")
+    fake_response = {
+        "output": {"message": {"content": [{"text": "hi"}]}},
+        "usage": {"inputTokens": 1, "outputTokens": 1},
+        "stopReason": "end_turn",
+        "serviceTier": {"type": "flex"},
+    }
+    fake_client = MagicMock()
+    fake_client.converse.return_value = fake_response
+    with patch.object(bedrock, "_client", return_value=fake_client):
+        *_, service_tier = asyncio.run(
+            bedrock.chat({"model": "m", "messages": [{"role": "user", "content": "hi"}]}, cfg)
+        )
+    assert service_tier == "flex"
+
+
+def test_chat_stream_extracts_resolved_service_tier():
+    cfg = _cfg(service_tier="flex")
+    fake_events = [
+        {"contentBlockStart": {"contentBlockIndex": 0, "start": {}}},
+        {"contentBlockDelta": {"contentBlockIndex": 0, "delta": {"text": "hi"}}},
+        {"contentBlockStop": {"contentBlockIndex": 0}},
+        {"metadata": {"usage": {"inputTokens": 1, "outputTokens": 1}, "serviceTier": {"type": "flex"}}},
+        {"messageStop": {"stopReason": "end_turn"}},
+    ]
+    fake_client = MagicMock()
+    fake_client.converse_stream.return_value = {"stream": iter(fake_events)}
+
+    async def run():
+        usage_holder = {
+            "prompt_tokens": 0,
+            "completion_tokens": 0,
+            "cache_read_tokens": 0,
+            "cache_write_tokens": 0,
+        }
+        with patch.object(bedrock, "_client", return_value=fake_client):
+            body = {"model": "m", "messages": [{"role": "user", "content": "hi"}]}
+            async for _ in bedrock.chat_stream(body, cfg, usage_holder):
+                pass
+        return usage_holder
+
+    usage_holder = asyncio.run(run())
+    assert usage_holder["service_tier"] == "flex"
 
 
 def test_tools_dropped_entirely_when_model_does_not_support_them():

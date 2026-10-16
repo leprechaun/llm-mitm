@@ -1,3 +1,5 @@
+import pytest
+
 from llm_mitm.config import PricingConfig, PricingTier
 from llm_mitm.pricing import compute_cost
 
@@ -69,6 +71,24 @@ def test_tier_threshold_counts_cache_tokens_toward_context_size():
     # the "fresh" prompt tokens, not just the cache-read ones that pushed it over.
     expected = 200 / 1_000_000 * 0.50 + 150_000 / 1_000_000 * 0.05
     assert cost == expected
+
+
+def test_flex_tier_applies_discount():
+    cfg = PricingConfig(input_cost_per_1m=1.0, output_cost_per_1m=5.0)
+    cost = compute_cost(cfg, prompt_tokens=1_000_000, completion_tokens=0, service_tier="flex")
+    assert cost == pytest.approx(0.5)
+
+
+def test_flex_discount_is_configurable():
+    cfg = PricingConfig(input_cost_per_1m=1.0, flex_discount=0.25)
+    cost = compute_cost(cfg, prompt_tokens=1_000_000, completion_tokens=0, service_tier="flex")
+    assert cost == pytest.approx(0.25)
+
+
+def test_non_flex_tier_does_not_apply_discount():
+    cfg = PricingConfig(input_cost_per_1m=1.0, output_cost_per_1m=5.0)
+    cost = compute_cost(cfg, prompt_tokens=1_000_000, completion_tokens=0, service_tier="default")
+    assert cost == 1.0
 
 
 def test_tier_picks_highest_matching_threshold():

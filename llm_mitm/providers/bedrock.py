@@ -250,6 +250,8 @@ def _converse_kwargs(body: dict, model_cfg: BedrockModelConfig) -> dict:
         kwargs["toolConfig"] = _to_bedrock_tool_config(body)
     if model_cfg.prompt_caching:
         _apply_prompt_caching(kwargs)
+    if model_cfg.service_tier:
+        kwargs["serviceTier"] = {"type": model_cfg.service_tier}
     return kwargs
 
 
@@ -284,7 +286,7 @@ def _openai_response(
     }
 
 
-async def chat(body: dict, model_cfg: BedrockModelConfig) -> tuple[dict, int, int, int, int]:
+async def chat(body: dict, model_cfg: BedrockModelConfig) -> tuple[dict, int, int, int, int, str | None]:
     client = _client(model_cfg.region)
     # Off the event loop: may do a blocking fetch for a remote image_url.
     kwargs = await asyncio.to_thread(_converse_kwargs, body, model_cfg)
@@ -308,20 +310,27 @@ async def chat(body: dict, model_cfg: BedrockModelConfig) -> tuple[dict, int, in
     completion_tokens = usage.get("outputTokens", 0)
     cache_read_tokens = usage.get("cacheReadInputTokens", 0)
     cache_write_tokens = usage.get("cacheWriteInputTokens", 0)
+    # The tier that actually served the request -- can differ from the
+    # requested tier (e.g. "flex" falling back to Standard capacity), so
+    # billing must read this instead of trusting model_cfg.service_tier.
+    resolved_service_tier = response.get("serviceTier", {}).get("type")
     finish_reason = _STOP_REASON_MAP.get(response.get("stopReason"), "stop")
     data = _openai_response(body["model"], text, tool_calls, prompt_tokens, completion_tokens, finish_reason)
-    return data, prompt_tokens, completion_tokens, cache_read_tokens, cache_write_tokens
+    return data, prompt_tokens, completion_tokens, cache_read_tokens, cache_write_tokens, resolved_service_tier
 
 
 async def _fake_stream(body: dict, model_cfg: BedrockModelConfig, usage_holder: dict) -> AsyncIterator[str]:
     # Fallback for models that reject tool use combined with ConverseStream:
     # do a normal blocking call and replay it as a single-shot SSE stream so
     # the client still gets the streaming response shape it asked for.
-    data, prompt_tokens, completion_tokens, cache_read_tokens, cache_write_tokens = await chat(body, model_cfg)
+    data, prompt_tokens, completion_tokens, cache_read_tokens, cache_write_tokens, service_tier = await chat(
+        body, model_cfg
+    )
     usage_holder["prompt_tokens"] = prompt_tokens
     usage_holder["completion_tokens"] = completion_tokens
     usage_holder["cache_read_tokens"] = cache_read_tokens
     usage_holder["cache_write_tokens"] = cache_write_tokens
+    usage_holder["service_tier"] = service_tier
 
     choice = data["choices"][0]
     message = choice["message"]
@@ -449,6 +458,9 @@ async def chat_stream(body: dict, model_cfg: BedrockModelConfig, usage_holder: d
             usage_holder["completion_tokens"] = usage.get("outputTokens", 0)
             usage_holder["cache_read_tokens"] = usage.get("cacheReadInputTokens", 0)
             usage_holder["cache_write_tokens"] = usage.get("cacheWriteInputTokens", 0)
+            # The tier that actually served the request -- see the matching
+            # comment in chat() for why this must come from the response.
+            usage_holder["service_tier"] = event["metadata"].get("serviceTier", {}).get("type")
         elif "messageStop" in event:
             saw_message_stop = True
             finish_reason = _STOP_REASON_MAP.get(event["messageStop"].get("stopReason"), "stop")

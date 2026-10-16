@@ -24,6 +24,10 @@ class PricingConfig(BaseModel):
     cache_read_cost_per_1m: float = 0.0
     cache_write_cost_per_1m: float = 0.0
     tiers: list[PricingTier] = []
+    # Multiplier applied to the whole request's cost when Bedrock resolves
+    # it to the "flex" service tier (see BedrockModelConfig.service_tier).
+    # Defaults to AWS's documented flat 50% discount off Standard pricing.
+    flex_discount: float = 0.5
 
 
 class BedrockModelConfig(PricingConfig):
@@ -44,6 +48,15 @@ class BedrockModelConfig(PricingConfig):
     # the client as a single-shot SSE stream so it still gets back the
     # streaming response shape it asked for.
     supports_tool_streaming: bool = True
+    # Requests one of Bedrock's Converse service tiers via the "serviceTier"
+    # field. "flex" trades latency (minutes rather than seconds, best-effort
+    # capacity) for a pricing discount -- good for batch-ish, non-interactive
+    # workloads (model evals, summarization, agentic workflows). "priority"
+    # trades a price premium for faster responses. Only some models support
+    # each tier -- check the model's "Service Tiers" table in its Bedrock
+    # model card; requesting an unsupported tier is rejected with a
+    # ValidationException.
+    service_tier: Literal["default", "priority", "flex"] | None = None
 
 
 class OllamaModelConfig(PricingConfig):
