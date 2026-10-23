@@ -36,12 +36,14 @@ async def chat(body: dict, model_cfg: OllamaModelConfig) -> tuple[dict, Usage]:
     return data, usage
 
 
-async def chat_stream(body: dict, model_cfg: OllamaModelConfig, usage: Usage) -> AsyncIterator[str]:
+async def chat_stream(body: dict, model_cfg: OllamaModelConfig, usage: Usage) -> AsyncIterator[dict]:
     # Ollama already speaks OpenAI's streaming format, so this is mostly a
     # passthrough -- we just rewrite the model name back and skim off usage.
+    # Yields structured chunks, not wire text -- app.py owns framing and
+    # appends [DONE] itself once this generator ends, so the upstream's own
+    # "[DONE]" line just stops the loop rather than being relayed.
     payload = _payload(body, model_cfg, stream=True)
     payload["stream_options"] = {"include_usage": True}
-    done_sent = False
     async with (
         httpx.AsyncClient(timeout=_TIMEOUT) as client,
         client.stream("POST", f"{model_cfg.base_url}/v1/chat/completions", json=payload) as response,
@@ -52,8 +54,6 @@ async def chat_stream(body: dict, model_cfg: OllamaModelConfig, usage: Usage) ->
                 continue
             data_str = line[len("data:") :].strip()
             if data_str == "[DONE]":
-                done_sent = True
-                yield "data: [DONE]\n\n"
                 break
             obj = json.loads(data_str)
             obj["model"] = body["model"]
@@ -61,6 +61,4 @@ async def chat_stream(body: dict, model_cfg: OllamaModelConfig, usage: Usage) ->
             if event_usage:
                 usage.prompt_tokens = event_usage.get("prompt_tokens", 0)
                 usage.completion_tokens = event_usage.get("completion_tokens", 0)
-            yield f"data: {json.dumps(obj)}\n\n"
-    if not done_sent:
-        yield "data: [DONE]\n\n"
+            yield obj

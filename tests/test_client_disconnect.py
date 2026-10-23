@@ -5,9 +5,9 @@ import llm_mitm.app as app_module
 
 
 async def _never_finishes_stream(body, model_cfg, usage):
-    yield 'data: {"delta": "partial"}\n\n'
+    yield {"delta": "partial"}
     await asyncio.sleep(3600)  # pretend the model is still "thinking"
-    yield "data: [DONE]\n\n"  # never reached in this test
+    yield {"delta": "unreachable"}  # never reached in this test
 
 
 def _fake_request(body: dict) -> MagicMock:

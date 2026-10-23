@@ -82,9 +82,13 @@ async def chat_completions(request: Request):
             # or an abandoned request would be misrecorded as a success.
             status = "cancelled"
             try:
-                async for sse_chunk in provider.chat_stream(body, provider_cfg, usage):
-                    accounting.observe_chunk(sse_chunk)
-                    yield sse_chunk
+                # Providers yield structured chunks, not wire text -- this
+                # is the one place that knows about SSE framing ("data: ",
+                # json.dumps, [DONE]).
+                async for payload in provider.chat_stream(body, provider_cfg, usage):
+                    accounting.observe_chunk(payload)
+                    yield f"data: {json.dumps(payload)}\n\n"
+                yield "data: [DONE]\n\n"
                 status = "ok"
             except Exception as exc:  # closed out as a terminal SSE error event below
                 status = "error"

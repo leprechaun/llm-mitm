@@ -9,8 +9,8 @@ client = TestClient(app_module.app)
 
 
 async def _ok_then_fail_stream(body, model_cfg, usage):
-    yield 'data: {"delta": "hello "}\n\n'
-    yield 'data: {"delta": "world"}\n\n'
+    yield {"delta": "hello "}
+    yield {"delta": "world"}
     usage.prompt_tokens = 5
     usage.completion_tokens = 2
     raise RuntimeError("simulated mid-stream failure (e.g. bedrock ThrottlingException)")

@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import json
 import time
 from collections.abc import Callable
 
@@ -10,18 +9,11 @@ from llm_mitm.providers import Usage
 from llm_mitm.usage import UsageEvent, record_usage
 
 
-def _sse_chunk_has_token(sse_chunk: str) -> bool:
-    # True for the first chunk that carries actual generated output -- not
-    # the synthetic role-only opener some providers send immediately, and
-    # not the trailing finish_reason/[DONE] chunks. Used to time TTFT from
-    # something a client would actually perceive as "the model responded",
-    # rather than from when the stream merely opened.
-    if not sse_chunk.startswith("data: ") or sse_chunk.strip() == "data: [DONE]":
-        return False
-    try:
-        payload = json.loads(sse_chunk[len("data: ") :])
-    except json.JSONDecodeError:
-        return False
+def _chunk_has_token(payload: dict) -> bool:
+    # True for a chunk that carries actual generated output -- not the
+    # synthetic role-only opener some providers send immediately, and not
+    # a finish_reason-only chunk. Used to time TTFT from something a client
+    # would actually perceive as "the model responded".
     delta = payload.get("choices", [{}])[0].get("delta", {})
     return bool(delta.get("content")) or bool(delta.get("tool_calls"))
 
@@ -58,11 +50,12 @@ class RequestAccounting:
         self._start = clock()
         self.ttft_s: float | None = None
 
-    def observe_chunk(self, sse_chunk: str) -> None:
-        # Call for every chunk yielded to the client during a streaming
-        # response, before it's sent. Records the elapsed time on the first
-        # chunk that actually carries generated output; a no-op afterwards.
-        if self.ttft_s is None and _sse_chunk_has_token(sse_chunk):
+    def observe_chunk(self, payload: dict) -> None:
+        # Call for every structured chunk a provider yields during a
+        # streaming response, before it's serialized and sent. Records the
+        # elapsed time on the first chunk that actually carries generated
+        # output; a no-op afterwards.
+        if self.ttft_s is None and _chunk_has_token(payload):
             self.ttft_s = self._clock() - self._start
 
     def finish(self, usage: Usage, status: str, *, stream: bool) -> None:

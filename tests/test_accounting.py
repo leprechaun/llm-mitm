@@ -1,6 +1,6 @@
 import pytest
 
-from llm_mitm.accounting import RequestAccounting, _sse_chunk_has_token
+from llm_mitm.accounting import RequestAccounting, _chunk_has_token
 from llm_mitm.config import PricingConfig
 from llm_mitm.providers import Usage
 
@@ -10,27 +10,24 @@ def _fake_clock(*times: float):
     return lambda: next(it)
 
 
-def test_sse_chunk_has_token_false_for_role_only_opener():
-    assert not _sse_chunk_has_token('data: {"choices": [{"delta": {"role": "assistant"}}]}\n\n')
+def test_chunk_has_token_false_for_role_only_opener():
+    assert not _chunk_has_token({"choices": [{"delta": {"role": "assistant"}}]})
 
 
-def test_sse_chunk_has_token_false_for_done_and_finish_reason():
-    assert not _sse_chunk_has_token("data: [DONE]\n\n")
-    assert not _sse_chunk_has_token('data: {"choices": [{"delta": {}, "finish_reason": "stop"}]}\n\n')
+def test_chunk_has_token_false_for_finish_reason_only():
+    assert not _chunk_has_token({"choices": [{"delta": {}, "finish_reason": "stop"}]})
 
 
-def test_sse_chunk_has_token_true_for_content_delta():
-    assert _sse_chunk_has_token('data: {"choices": [{"delta": {"content": "hi"}}]}\n\n')
+def test_chunk_has_token_true_for_content_delta():
+    assert _chunk_has_token({"choices": [{"delta": {"content": "hi"}}]})
 
 
-def test_sse_chunk_has_token_true_for_tool_call_delta():
-    assert _sse_chunk_has_token(
-        'data: {"choices": [{"delta": {"tool_calls": [{"index": 0, "id": "call_1"}]}}]}\n\n'
-    )
+def test_chunk_has_token_true_for_tool_call_delta():
+    assert _chunk_has_token({"choices": [{"delta": {"tool_calls": [{"index": 0, "id": "call_1"}]}}]})
 
 
-def test_sse_chunk_has_token_false_for_empty_content():
-    assert not _sse_chunk_has_token('data: {"choices": [{"delta": {"content": ""}}]}\n\n')
+def test_chunk_has_token_false_for_empty_content():
+    assert not _chunk_has_token({"choices": [{"delta": {"content": ""}}]})
 
 
 def test_finish_records_usage_event_with_computed_cost():
@@ -69,9 +66,9 @@ def test_observe_chunk_sets_ttft_once_on_first_real_token():
     accounting = RequestAccounting(
         "sk-test", "m", "bedrock", PricingConfig(), clock=_fake_clock(0.0, 0.4, 2.0), sink=captured.append
     )
-    accounting.observe_chunk('data: {"choices": [{"delta": {"role": "assistant"}}]}\n\n')
-    accounting.observe_chunk('data: {"choices": [{"delta": {"content": "hi"}}]}\n\n')
-    accounting.observe_chunk('data: {"choices": [{"delta": {"content": " there"}}]}\n\n')
+    accounting.observe_chunk({"choices": [{"delta": {"role": "assistant"}}]})
+    accounting.observe_chunk({"choices": [{"delta": {"content": "hi"}}]})
+    accounting.observe_chunk({"choices": [{"delta": {"content": " there"}}]})
     accounting.finish(Usage(), "ok", stream=True)
 
     event = captured[0]
@@ -86,8 +83,8 @@ def test_observe_chunk_leaves_ttft_none_without_a_token_chunk():
     accounting = RequestAccounting(
         "sk-test", "m", "bedrock", PricingConfig(), clock=_fake_clock(0.0, 1.0), sink=captured.append
     )
-    accounting.observe_chunk('data: {"choices": [{"delta": {"role": "assistant"}}]}\n\n')
-    accounting.observe_chunk("data: [DONE]\n\n")
+    accounting.observe_chunk({"choices": [{"delta": {"role": "assistant"}}]})
+    accounting.observe_chunk({"choices": [{"delta": {}, "finish_reason": "stop"}]})
     accounting.finish(Usage(), "error", stream=True)
 
     assert captured[0].ttft_s is None

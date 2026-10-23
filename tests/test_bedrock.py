@@ -252,19 +252,16 @@ def test_chat_stream_translates_text_and_tool_calls():
 
     async def run():
         usage = Usage()
-        chunks = []
+        payloads = []
         with patch.object(bedrock, "_client", return_value=fake_client):
             body = {"model": "m", "messages": [{"role": "user", "content": "hi"}]}
-            async for sse in bedrock.chat_stream(body, cfg, usage):
-                chunks.append(sse)
-        return chunks, usage
+            async for chunk in bedrock.chat_stream(body, cfg, usage):
+                payloads.append(chunk)
+        return payloads, usage
 
-    chunks, usage = asyncio.run(run())
+    payloads, usage = asyncio.run(run())
 
-    assert chunks[-1] == "data: [DONE]\n\n"
     assert usage == Usage(prompt_tokens=42, completion_tokens=13, cache_read_tokens=0, cache_write_tokens=0)
-
-    payloads = [json.loads(c[len("data: ") :]) for c in chunks if c.strip() != "data: [DONE]"]
 
     tool_call_chunks = [
         p["choices"][0]["delta"]["tool_calls"][0] for p in payloads if p["choices"][0]["delta"].get("tool_calls")
@@ -309,19 +306,17 @@ def test_chat_stream_falls_back_to_blocking_call_when_tool_streaming_unsupported
 
     async def run():
         usage = Usage()
-        chunks = []
+        payloads = []
         with patch.object(bedrock, "_client", return_value=fake_client):
-            async for sse in bedrock.chat_stream(body, cfg, usage):
-                chunks.append(sse)
-        return chunks, usage
+            async for chunk in bedrock.chat_stream(body, cfg, usage):
+                payloads.append(chunk)
+        return payloads, usage
 
-    chunks, usage = asyncio.run(run())
+    payloads, usage = asyncio.run(run())
 
     fake_client.converse.assert_called_once()
     assert usage == Usage(prompt_tokens=10, completion_tokens=4, cache_read_tokens=0, cache_write_tokens=0)
-    assert chunks[-1] == "data: [DONE]\n\n"
 
-    payloads = [json.loads(c[len("data: ") :]) for c in chunks if c.strip() != "data: [DONE]"]
     tool_call = next(
         p["choices"][0]["delta"]["tool_calls"][0] for p in payloads if p["choices"][0]["delta"].get("tool_calls")
     )

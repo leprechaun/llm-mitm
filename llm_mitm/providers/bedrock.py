@@ -324,10 +324,11 @@ async def chat(body: dict, model_cfg: BedrockModelConfig) -> tuple[dict, Usage]:
     return data, usage
 
 
-async def _fake_stream(body: dict, model_cfg: BedrockModelConfig, usage: Usage) -> AsyncIterator[str]:
+async def _fake_stream(body: dict, model_cfg: BedrockModelConfig, usage: Usage) -> AsyncIterator[dict]:
     # Fallback for models that reject tool use combined with ConverseStream:
-    # do a normal blocking call and replay it as a single-shot SSE stream so
-    # the client still gets the streaming response shape it asked for.
+    # do a normal blocking call and replay it as a single-shot stream of
+    # chunks so the client still gets the streaming response shape it asked
+    # for. Yields structured chunks, not wire text -- app.py owns framing.
     data, result_usage = await chat(body, model_cfg)
     usage.prompt_tokens = result_usage.prompt_tokens
     usage.completion_tokens = result_usage.completion_tokens
@@ -338,15 +339,14 @@ async def _fake_stream(body: dict, model_cfg: BedrockModelConfig, usage: Usage) 
     choice = data["choices"][0]
     message = choice["message"]
 
-    def chunk(delta: dict, finish_reason: str | None = None) -> str:
-        payload = {
+    def chunk(delta: dict, finish_reason: str | None = None) -> dict:
+        return {
             "id": data["id"],
             "object": "chat.completion.chunk",
             "created": data["created"],
             "model": data["model"],
             "choices": [{"index": 0, "delta": delta, "finish_reason": finish_reason}],
         }
-        return f"data: {json.dumps(payload)}\n\n"
 
     yield chunk({"role": "assistant"})
     if message.get("content"):
@@ -366,13 +366,12 @@ async def _fake_stream(body: dict, model_cfg: BedrockModelConfig, usage: Usage) 
             }
         )
     yield chunk({}, choice["finish_reason"])
-    yield "data: [DONE]\n\n"
 
 
-async def chat_stream(body: dict, model_cfg: BedrockModelConfig, usage: Usage) -> AsyncIterator[str]:
+async def chat_stream(body: dict, model_cfg: BedrockModelConfig, usage: Usage) -> AsyncIterator[dict]:
     if not model_cfg.supports_tool_streaming and _wants_tool_config(body, model_cfg):
-        async for sse_chunk in _fake_stream(body, model_cfg, usage):
-            yield sse_chunk
+        async for stream_chunk in _fake_stream(body, model_cfg, usage):
+            yield stream_chunk
         return
 
     loop = asyncio.get_running_loop()
@@ -400,15 +399,14 @@ async def chat_stream(body: dict, model_cfg: BedrockModelConfig, usage: Usage) -
     # delta index only counts tool calls, so we remap per tool-use block.
     tool_call_indexes: dict[int, int] = {}
 
-    def chunk(delta: dict, finish_reason: str | None = None) -> str:
-        payload = {
+    def chunk(delta: dict, finish_reason: str | None = None) -> dict:
+        return {
             "id": completion_id,
             "object": "chat.completion.chunk",
             "created": created,
             "model": model_name,
             "choices": [{"index": 0, "delta": delta, "finish_reason": finish_reason}],
         }
-        return f"data: {json.dumps(payload)}\n\n"
 
     yield chunk({"role": "assistant"})
 
@@ -479,5 +477,3 @@ async def chat_stream(body: dict, model_cfg: BedrockModelConfig, usage: Usage) -
             "no error) -- likely an idle/read timeout before the model "
             "produced any output."
         )
-
-    yield "data: [DONE]\n\n"
