@@ -12,7 +12,7 @@ from prometheus_client import CONTENT_TYPE_LATEST, generate_latest
 from llm_mitm.auth import get_key_id
 from llm_mitm.config import load_config
 from llm_mitm.pricing import compute_cost
-from llm_mitm.providers import bedrock, ollama
+from llm_mitm.providers import Usage, bedrock, ollama
 from llm_mitm.usage import UsageEvent, record_usage
 
 CONFIG_PATH = os.environ.get("LLM_MITM_CONFIG", "config.yaml")
@@ -85,13 +85,7 @@ async def chat_completions(request: Request):
     start = time.monotonic()
 
     if stream:
-        usage_holder = {
-            "prompt_tokens": 0,
-            "completion_tokens": 0,
-            "cache_read_tokens": 0,
-            "cache_write_tokens": 0,
-            "service_tier": None,
-        }
+        usage = Usage()
 
         async def generate():
             # Only ever becomes "ok" once the stream actually finishes below.
@@ -103,7 +97,7 @@ async def chat_completions(request: Request):
             status = "cancelled"
             ttft_s: float | None = None
             try:
-                async for sse_chunk in provider.chat_stream(body, provider_cfg, usage_holder):
+                async for sse_chunk in provider.chat_stream(body, provider_cfg, usage):
                     if ttft_s is None and _sse_chunk_has_token(sse_chunk):
                         ttft_s = time.monotonic() - start
                     yield sse_chunk
@@ -116,22 +110,22 @@ async def chat_completions(request: Request):
             finally:
                 cost = compute_cost(
                     provider_cfg,
-                    usage_holder["prompt_tokens"],
-                    usage_holder["completion_tokens"],
-                    usage_holder["cache_read_tokens"],
-                    usage_holder["cache_write_tokens"],
-                    usage_holder["service_tier"],
+                    usage.prompt_tokens,
+                    usage.completion_tokens,
+                    usage.cache_read_tokens,
+                    usage.cache_write_tokens,
+                    usage.service_tier,
                 )
                 record_usage(
                     UsageEvent(
                         key_id=key_id,
                         model=model_name,
                         provider=model_entry.provider,
-                        prompt_tokens=usage_holder["prompt_tokens"],
-                        completion_tokens=usage_holder["completion_tokens"],
-                        cache_read_tokens=usage_holder["cache_read_tokens"],
-                        cache_write_tokens=usage_holder["cache_write_tokens"],
-                        service_tier=usage_holder["service_tier"],
+                        prompt_tokens=usage.prompt_tokens,
+                        completion_tokens=usage.completion_tokens,
+                        cache_read_tokens=usage.cache_read_tokens,
+                        cache_write_tokens=usage.cache_write_tokens,
+                        service_tier=usage.service_tier,
                         ttft_s=ttft_s,
                         cost_usd=cost,
                         duration_s=time.monotonic() - start,
@@ -143,9 +137,7 @@ async def chat_completions(request: Request):
         return StreamingResponse(generate(), media_type="text/event-stream")
 
     try:
-        data, prompt_tokens, completion_tokens, cache_read_tokens, cache_write_tokens, service_tier = (
-            await provider.chat(body, provider_cfg)
-        )
+        data, usage = await provider.chat(body, provider_cfg)
     except Exception as exc:  # noqa: BLE001 -- turned into a clean upstream_error response below
         record_usage(
             UsageEvent(
@@ -163,18 +155,23 @@ async def chat_completions(request: Request):
         return _openai_error(str(exc), "upstream_error", 502)
 
     cost = compute_cost(
-        provider_cfg, prompt_tokens, completion_tokens, cache_read_tokens, cache_write_tokens, service_tier
+        provider_cfg,
+        usage.prompt_tokens,
+        usage.completion_tokens,
+        usage.cache_read_tokens,
+        usage.cache_write_tokens,
+        usage.service_tier,
     )
     record_usage(
         UsageEvent(
             key_id=key_id,
             model=model_name,
             provider=model_entry.provider,
-            prompt_tokens=prompt_tokens,
-            completion_tokens=completion_tokens,
-            cache_read_tokens=cache_read_tokens,
-            cache_write_tokens=cache_write_tokens,
-            service_tier=service_tier,
+            prompt_tokens=usage.prompt_tokens,
+            completion_tokens=usage.completion_tokens,
+            cache_read_tokens=usage.cache_read_tokens,
+            cache_write_tokens=usage.cache_write_tokens,
+            service_tier=usage.service_tier,
             cost_usd=cost,
             duration_s=time.monotonic() - start,
             status="ok",

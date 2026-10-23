@@ -16,6 +16,7 @@ import boto3
 import httpx
 
 from llm_mitm.config import BedrockModelConfig
+from llm_mitm.providers import Usage
 
 _STOP_REASON_MAP = {
     "end_turn": "stop",
@@ -286,7 +287,7 @@ def _openai_response(
     }
 
 
-async def chat(body: dict, model_cfg: BedrockModelConfig) -> tuple[dict, int, int, int, int, str | None]:
+async def chat(body: dict, model_cfg: BedrockModelConfig) -> tuple[dict, Usage]:
     client = _client(model_cfg.region)
     # Off the event loop: may do a blocking fetch for a remote image_url.
     kwargs = await asyncio.to_thread(_converse_kwargs, body, model_cfg)
@@ -305,32 +306,34 @@ async def chat(body: dict, model_cfg: BedrockModelConfig) -> tuple[dict, int, in
         for block in content_blocks
         if "toolUse" in block
     ]
-    usage = response.get("usage", {})
-    prompt_tokens = usage.get("inputTokens", 0)
-    completion_tokens = usage.get("outputTokens", 0)
-    cache_read_tokens = usage.get("cacheReadInputTokens", 0)
-    cache_write_tokens = usage.get("cacheWriteInputTokens", 0)
-    # The tier that actually served the request -- can differ from the
-    # requested tier (e.g. "flex" falling back to Standard capacity), so
-    # billing must read this instead of trusting model_cfg.service_tier.
-    resolved_service_tier = response.get("serviceTier", {}).get("type")
+    response_usage = response.get("usage", {})
+    usage = Usage(
+        prompt_tokens=response_usage.get("inputTokens", 0),
+        completion_tokens=response_usage.get("outputTokens", 0),
+        cache_read_tokens=response_usage.get("cacheReadInputTokens", 0),
+        cache_write_tokens=response_usage.get("cacheWriteInputTokens", 0),
+        # The tier that actually served the request -- can differ from the
+        # requested tier (e.g. "flex" falling back to Standard capacity), so
+        # billing must read this instead of trusting model_cfg.service_tier.
+        service_tier=response.get("serviceTier", {}).get("type"),
+    )
     finish_reason = _STOP_REASON_MAP.get(response.get("stopReason"), "stop")
-    data = _openai_response(body["model"], text, tool_calls, prompt_tokens, completion_tokens, finish_reason)
-    return data, prompt_tokens, completion_tokens, cache_read_tokens, cache_write_tokens, resolved_service_tier
+    data = _openai_response(
+        body["model"], text, tool_calls, usage.prompt_tokens, usage.completion_tokens, finish_reason
+    )
+    return data, usage
 
 
-async def _fake_stream(body: dict, model_cfg: BedrockModelConfig, usage_holder: dict) -> AsyncIterator[str]:
+async def _fake_stream(body: dict, model_cfg: BedrockModelConfig, usage: Usage) -> AsyncIterator[str]:
     # Fallback for models that reject tool use combined with ConverseStream:
     # do a normal blocking call and replay it as a single-shot SSE stream so
     # the client still gets the streaming response shape it asked for.
-    data, prompt_tokens, completion_tokens, cache_read_tokens, cache_write_tokens, service_tier = await chat(
-        body, model_cfg
-    )
-    usage_holder["prompt_tokens"] = prompt_tokens
-    usage_holder["completion_tokens"] = completion_tokens
-    usage_holder["cache_read_tokens"] = cache_read_tokens
-    usage_holder["cache_write_tokens"] = cache_write_tokens
-    usage_holder["service_tier"] = service_tier
+    data, result_usage = await chat(body, model_cfg)
+    usage.prompt_tokens = result_usage.prompt_tokens
+    usage.completion_tokens = result_usage.completion_tokens
+    usage.cache_read_tokens = result_usage.cache_read_tokens
+    usage.cache_write_tokens = result_usage.cache_write_tokens
+    usage.service_tier = result_usage.service_tier
 
     choice = data["choices"][0]
     message = choice["message"]
@@ -366,9 +369,9 @@ async def _fake_stream(body: dict, model_cfg: BedrockModelConfig, usage_holder: 
     yield "data: [DONE]\n\n"
 
 
-async def chat_stream(body: dict, model_cfg: BedrockModelConfig, usage_holder: dict) -> AsyncIterator[str]:
+async def chat_stream(body: dict, model_cfg: BedrockModelConfig, usage: Usage) -> AsyncIterator[str]:
     if not model_cfg.supports_tool_streaming and _wants_tool_config(body, model_cfg):
-        async for sse_chunk in _fake_stream(body, model_cfg, usage_holder):
+        async for sse_chunk in _fake_stream(body, model_cfg, usage):
             yield sse_chunk
         return
 
@@ -453,14 +456,14 @@ async def chat_stream(body: dict, model_cfg: BedrockModelConfig, usage_holder: d
                     }
                 )
         elif "metadata" in event:
-            usage = event["metadata"].get("usage", {})
-            usage_holder["prompt_tokens"] = usage.get("inputTokens", 0)
-            usage_holder["completion_tokens"] = usage.get("outputTokens", 0)
-            usage_holder["cache_read_tokens"] = usage.get("cacheReadInputTokens", 0)
-            usage_holder["cache_write_tokens"] = usage.get("cacheWriteInputTokens", 0)
+            event_usage = event["metadata"].get("usage", {})
+            usage.prompt_tokens = event_usage.get("inputTokens", 0)
+            usage.completion_tokens = event_usage.get("outputTokens", 0)
+            usage.cache_read_tokens = event_usage.get("cacheReadInputTokens", 0)
+            usage.cache_write_tokens = event_usage.get("cacheWriteInputTokens", 0)
             # The tier that actually served the request -- see the matching
             # comment in chat() for why this must come from the response.
-            usage_holder["service_tier"] = event["metadata"].get("serviceTier", {}).get("type")
+            usage.service_tier = event["metadata"].get("serviceTier", {}).get("type")
         elif "messageStop" in event:
             saw_message_stop = True
             finish_reason = _STOP_REASON_MAP.get(event["messageStop"].get("stopReason"), "stop")

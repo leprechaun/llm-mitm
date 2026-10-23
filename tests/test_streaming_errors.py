@@ -8,11 +8,11 @@ import llm_mitm.app as app_module
 client = TestClient(app_module.app)
 
 
-async def _ok_then_fail_stream(body, model_cfg, usage_holder):
+async def _ok_then_fail_stream(body, model_cfg, usage):
     yield 'data: {"delta": "hello "}\n\n'
     yield 'data: {"delta": "world"}\n\n'
-    usage_holder["prompt_tokens"] = 5
-    usage_holder["completion_tokens"] = 2
+    usage.prompt_tokens = 5
+    usage.completion_tokens = 2
     raise RuntimeError("simulated mid-stream failure (e.g. bedrock ThrottlingException)")
 
 
