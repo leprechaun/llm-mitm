@@ -46,6 +46,11 @@ jobs:
       - name: Run tests
         run: uv run pytest -v tests/
 
+      - uses: qltysh/qlty-action/coverage@v2
+        with:
+          token: ${{ secrets.QLTY_COVERAGE_TOKEN }}
+          files: reports/lcov.info
+
   build-and-push:
     needs: test
     if: github.ref == 'refs/heads/master'
