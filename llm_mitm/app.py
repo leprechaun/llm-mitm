@@ -3,17 +3,16 @@ from __future__ import annotations
 import json
 import logging
 import os
-import time
 
 from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse, Response, StreamingResponse
 from prometheus_client import CONTENT_TYPE_LATEST, generate_latest
 
+from llm_mitm.accounting import RequestAccounting
 from llm_mitm.auth import get_key_id
 from llm_mitm.config import load_config
-from llm_mitm.pricing import compute_cost
 from llm_mitm.providers import Usage, bedrock, ollama
-from llm_mitm.usage import UsageEvent, record_usage
+from llm_mitm.usage import record_usage
 
 CONFIG_PATH = os.environ.get("LLM_MITM_CONFIG", "config.yaml")
 config = load_config(CONFIG_PATH)
@@ -29,22 +28,6 @@ def _openai_error(message: str, error_type: str, status_code: int) -> JSONRespon
         status_code=status_code,
         content={"error": {"message": message, "type": error_type, "code": None}},
     )
-
-
-def _sse_chunk_has_token(sse_chunk: str) -> bool:
-    # True for the first chunk that carries actual generated output -- not
-    # the synthetic role-only opener some providers send immediately, and
-    # not the trailing finish_reason/[DONE] chunks. Used to time TTFT from
-    # something a client would actually perceive as "the model responded",
-    # rather than from when the stream merely opened.
-    if not sse_chunk.startswith("data: ") or sse_chunk.strip() == "data: [DONE]":
-        return False
-    try:
-        payload = json.loads(sse_chunk[len("data: ") :])
-    except json.JSONDecodeError:
-        return False
-    delta = payload.get("choices", [{}])[0].get("delta", {})
-    return bool(delta.get("content")) or bool(delta.get("tool_calls"))
 
 
 @app.get("/healthz")
@@ -82,7 +65,10 @@ async def chat_completions(request: Request):
     provider = PROVIDERS[model_entry.provider]
     provider_cfg = model_entry.provider_config
     stream = bool(body.get("stream", False))
-    start = time.monotonic()
+    # sink=record_usage passed explicitly (rather than relying on
+    # RequestAccounting's default) so tests can still patch
+    # llm_mitm.app.record_usage, same as before this refactor.
+    accounting = RequestAccounting(key_id, model_name, model_entry.provider, provider_cfg, sink=record_usage)
 
     if stream:
         usage = Usage()
@@ -95,11 +81,9 @@ async def chat_completions(request: Request):
             # catch -- so status must default to something other than "ok",
             # or an abandoned request would be misrecorded as a success.
             status = "cancelled"
-            ttft_s: float | None = None
             try:
                 async for sse_chunk in provider.chat_stream(body, provider_cfg, usage):
-                    if ttft_s is None and _sse_chunk_has_token(sse_chunk):
-                        ttft_s = time.monotonic() - start
+                    accounting.observe_chunk(sse_chunk)
                     yield sse_chunk
                 status = "ok"
             except Exception as exc:  # closed out as a terminal SSE error event below
@@ -108,74 +92,15 @@ async def chat_completions(request: Request):
                 yield f"data: {json.dumps({'error': {'message': str(exc), 'type': 'upstream_error'}})}\n\n"
                 yield "data: [DONE]\n\n"
             finally:
-                cost = compute_cost(
-                    provider_cfg,
-                    usage.prompt_tokens,
-                    usage.completion_tokens,
-                    usage.cache_read_tokens,
-                    usage.cache_write_tokens,
-                    usage.service_tier,
-                )
-                record_usage(
-                    UsageEvent(
-                        key_id=key_id,
-                        model=model_name,
-                        provider=model_entry.provider,
-                        prompt_tokens=usage.prompt_tokens,
-                        completion_tokens=usage.completion_tokens,
-                        cache_read_tokens=usage.cache_read_tokens,
-                        cache_write_tokens=usage.cache_write_tokens,
-                        service_tier=usage.service_tier,
-                        ttft_s=ttft_s,
-                        cost_usd=cost,
-                        duration_s=time.monotonic() - start,
-                        status=status,
-                        stream=True,
-                    )
-                )
+                accounting.finish(usage, status, stream=True)
 
         return StreamingResponse(generate(), media_type="text/event-stream")
 
     try:
         data, usage = await provider.chat(body, provider_cfg)
     except Exception as exc:  # noqa: BLE001 -- turned into a clean upstream_error response below
-        record_usage(
-            UsageEvent(
-                key_id=key_id,
-                model=model_name,
-                provider=model_entry.provider,
-                prompt_tokens=0,
-                completion_tokens=0,
-                cost_usd=0.0,
-                duration_s=time.monotonic() - start,
-                status="error",
-                stream=False,
-            )
-        )
+        accounting.finish(Usage(), "error", stream=False)
         return _openai_error(str(exc), "upstream_error", 502)
 
-    cost = compute_cost(
-        provider_cfg,
-        usage.prompt_tokens,
-        usage.completion_tokens,
-        usage.cache_read_tokens,
-        usage.cache_write_tokens,
-        usage.service_tier,
-    )
-    record_usage(
-        UsageEvent(
-            key_id=key_id,
-            model=model_name,
-            provider=model_entry.provider,
-            prompt_tokens=usage.prompt_tokens,
-            completion_tokens=usage.completion_tokens,
-            cache_read_tokens=usage.cache_read_tokens,
-            cache_write_tokens=usage.cache_write_tokens,
-            service_tier=usage.service_tier,
-            cost_usd=cost,
-            duration_s=time.monotonic() - start,
-            status="ok",
-            stream=False,
-        )
-    )
+    accounting.finish(usage, "ok", stream=False)
     return JSONResponse(content=data)
