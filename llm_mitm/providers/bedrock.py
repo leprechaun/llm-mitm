@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import functools
 import json
 import queue
 import re
@@ -77,23 +78,33 @@ def _image_block_from_url(url: str) -> dict:
     return {"image": {"format": image_format, "source": {"bytes": image_bytes}}}
 
 
+def _text_block_from_part(part: dict) -> dict | None:
+    text = part.get("text", "")
+    return {"text": text} if text else None
+
+
+def _image_block_from_part(part: dict) -> dict | None:
+    url = part.get("image_url", {}).get("url", "")
+    return _image_block_from_url(url) if url else None
+
+
+_BLOCK_CONVERTERS = {
+    "text": _text_block_from_part,
+    "image_url": _image_block_from_part,
+}
+
+
+def _block_from_part(part: dict) -> dict | None:
+    converter = _BLOCK_CONVERTERS.get(part.get("type"))
+    return converter(part) if converter else None
+
+
 def _content_blocks(content: str | list[dict] | None) -> list[dict]:
     if content is None:
         return []
     if isinstance(content, str):
         return [{"text": content}] if content else []
-    blocks: list[dict] = []
-    for part in content:
-        part_type = part.get("type")
-        if part_type == "text":
-            text = part.get("text", "")
-            if text:
-                blocks.append({"text": text})
-        elif part_type == "image_url":
-            url = part.get("image_url", {}).get("url", "")
-            if url:
-                blocks.append(_image_block_from_url(url))
-    return blocks
+    return [block for part in content if (block := _block_from_part(part)) is not None]
 
 
 def _to_bedrock_messages(messages: list[dict]) -> tuple[list[dict], list[dict]]:
@@ -256,6 +267,35 @@ def _converse_kwargs(body: dict, model_cfg: BedrockModelConfig) -> dict:
     return kwargs
 
 
+def _extract_usage(container: dict) -> Usage:
+    # `container` is either the full Converse response or a ConverseStream
+    # "metadata" event -- both carry sibling "usage" and "serviceTier" keys
+    # at the same nesting level.
+    usage_dict = container.get("usage", {})
+    return Usage(
+        prompt_tokens=usage_dict.get("inputTokens", 0),
+        completion_tokens=usage_dict.get("outputTokens", 0),
+        cache_read_tokens=usage_dict.get("cacheReadInputTokens", 0),
+        cache_write_tokens=usage_dict.get("cacheWriteInputTokens", 0),
+        # The tier that actually served the request -- can differ from the
+        # requested tier (e.g. "flex" falling back to Standard capacity), so
+        # billing must read this instead of trusting model_cfg.service_tier.
+        service_tier=container.get("serviceTier", {}).get("type"),
+    )
+
+
+def _stream_chunk(
+    completion_id: str, created: int, model_name: str, delta: dict, finish_reason: str | None = None
+) -> dict:
+    return {
+        "id": completion_id,
+        "object": "chat.completion.chunk",
+        "created": created,
+        "model": model_name,
+        "choices": [{"index": 0, "delta": delta, "finish_reason": finish_reason}],
+    }
+
+
 def _openai_response(
     model_name: str,
     text: str,
@@ -306,17 +346,7 @@ async def chat(body: dict, model_cfg: BedrockModelConfig) -> tuple[dict, Usage]:
         for block in content_blocks
         if "toolUse" in block
     ]
-    response_usage = response.get("usage", {})
-    usage = Usage(
-        prompt_tokens=response_usage.get("inputTokens", 0),
-        completion_tokens=response_usage.get("outputTokens", 0),
-        cache_read_tokens=response_usage.get("cacheReadInputTokens", 0),
-        cache_write_tokens=response_usage.get("cacheWriteInputTokens", 0),
-        # The tier that actually served the request -- can differ from the
-        # requested tier (e.g. "flex" falling back to Standard capacity), so
-        # billing must read this instead of trusting model_cfg.service_tier.
-        service_tier=response.get("serviceTier", {}).get("type"),
-    )
+    usage = _extract_usage(response)
     finish_reason = _STOP_REASON_MAP.get(response.get("stopReason"), "stop")
     data = _openai_response(
         body["model"], text, tool_calls, usage.prompt_tokens, usage.completion_tokens, finish_reason
@@ -330,23 +360,11 @@ async def _fake_stream(body: dict, model_cfg: BedrockModelConfig, usage: Usage) 
     # chunks so the client still gets the streaming response shape it asked
     # for. Yields structured chunks, not wire text -- app.py owns framing.
     data, result_usage = await chat(body, model_cfg)
-    usage.prompt_tokens = result_usage.prompt_tokens
-    usage.completion_tokens = result_usage.completion_tokens
-    usage.cache_read_tokens = result_usage.cache_read_tokens
-    usage.cache_write_tokens = result_usage.cache_write_tokens
-    usage.service_tier = result_usage.service_tier
+    usage.update(result_usage)
 
     choice = data["choices"][0]
     message = choice["message"]
-
-    def chunk(delta: dict, finish_reason: str | None = None) -> dict:
-        return {
-            "id": data["id"],
-            "object": "chat.completion.chunk",
-            "created": data["created"],
-            "model": data["model"],
-            "choices": [{"index": 0, "delta": delta, "finish_reason": finish_reason}],
-        }
+    chunk = functools.partial(_stream_chunk, data["id"], data["created"], data["model"])
 
     yield chunk({"role": "assistant"})
     if message.get("content"):
@@ -399,14 +417,7 @@ async def chat_stream(body: dict, model_cfg: BedrockModelConfig, usage: Usage) -
     # delta index only counts tool calls, so we remap per tool-use block.
     tool_call_indexes: dict[int, int] = {}
 
-    def chunk(delta: dict, finish_reason: str | None = None) -> dict:
-        return {
-            "id": completion_id,
-            "object": "chat.completion.chunk",
-            "created": created,
-            "model": model_name,
-            "choices": [{"index": 0, "delta": delta, "finish_reason": finish_reason}],
-        }
+    chunk = functools.partial(_stream_chunk, completion_id, created, model_name)
 
     yield chunk({"role": "assistant"})
 
@@ -454,14 +465,7 @@ async def chat_stream(body: dict, model_cfg: BedrockModelConfig, usage: Usage) -
                     }
                 )
         elif "metadata" in event:
-            event_usage = event["metadata"].get("usage", {})
-            usage.prompt_tokens = event_usage.get("inputTokens", 0)
-            usage.completion_tokens = event_usage.get("outputTokens", 0)
-            usage.cache_read_tokens = event_usage.get("cacheReadInputTokens", 0)
-            usage.cache_write_tokens = event_usage.get("cacheWriteInputTokens", 0)
-            # The tier that actually served the request -- see the matching
-            # comment in chat() for why this must come from the response.
-            usage.service_tier = event["metadata"].get("serviceTier", {}).get("type")
+            usage.update(_extract_usage(event["metadata"]))
         elif "messageStop" in event:
             saw_message_stop = True
             finish_reason = _STOP_REASON_MAP.get(event["messageStop"].get("stopReason"), "stop")

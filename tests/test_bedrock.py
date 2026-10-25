@@ -209,6 +209,30 @@ def test_chat_extracts_tool_calls():
     assert usage.service_tier is None
 
 
+def test_extract_usage_reads_sibling_usage_and_service_tier_keys():
+    # Shared by chat()'s Converse response and chat_stream()'s metadata
+    # event -- both carry sibling "usage"/"serviceTier" keys at the same
+    # nesting level.
+    usage = bedrock._extract_usage(
+        {
+            "usage": {
+                "inputTokens": 20,
+                "outputTokens": 5,
+                "cacheReadInputTokens": 5000,
+                "cacheWriteInputTokens": 300,
+            },
+            "serviceTier": {"type": "flex"},
+        }
+    )
+    assert usage == Usage(
+        prompt_tokens=20, completion_tokens=5, cache_read_tokens=5000, cache_write_tokens=300, service_tier="flex"
+    )
+
+
+def test_extract_usage_defaults_when_keys_missing():
+    assert bedrock._extract_usage({}) == Usage()
+
+
 def test_chat_extracts_cache_tokens():
     cfg = _cfg()
     fake_response = {

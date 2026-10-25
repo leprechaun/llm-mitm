@@ -16,3 +16,13 @@ class Usage:
     cache_read_tokens: int = 0
     cache_write_tokens: int = 0
     service_tier: str | None = None
+
+    def update(self, other: Usage) -> None:
+        # Copy another Usage's fields onto this one in place -- for
+        # providers that mutate a caller-supplied Usage as a stream
+        # progresses rather than returning a fresh one each time.
+        self.prompt_tokens = other.prompt_tokens
+        self.completion_tokens = other.completion_tokens
+        self.cache_read_tokens = other.cache_read_tokens
+        self.cache_write_tokens = other.cache_write_tokens
+        self.service_tier = other.service_tier
