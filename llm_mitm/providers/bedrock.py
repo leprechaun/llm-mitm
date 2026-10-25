@@ -58,23 +58,28 @@ def _image_format_from_content_type(content_type: str) -> str:
     return media_type.split("/")[-1] if "/" in media_type else ""
 
 
+def _image_from_data_uri(match: re.Match[str]) -> tuple[bytes, str]:
+    image_format = _normalize_image_format(match.group("fmt"))
+    image_bytes = base64.b64decode(match.group("data"))
+    return image_bytes, image_format
+
+
+def _image_from_remote_url(url: str) -> tuple[bytes, str]:
+    response = httpx.get(url, timeout=_IMAGE_FETCH_TIMEOUT)
+    response.raise_for_status()
+    fmt_guess = _image_format_from_content_type(response.headers.get("content-type", ""))
+    if not fmt_guess:
+        path = urlparse(url).path
+        fmt_guess = path.rsplit(".", 1)[-1] if "." in path else ""
+    return response.content, _normalize_image_format(fmt_guess)
+
+
 def _image_block_from_url(url: str) -> dict:
     # OpenAI vision clients send either a data: URI (the image embedded
     # inline) or a plain http(s) URL (fetched here, since Bedrock's image
     # block only accepts raw bytes, not a remote URL).
     match = _DATA_URI_RE.match(url)
-    if match:
-        image_format = _normalize_image_format(match.group("fmt"))
-        image_bytes = base64.b64decode(match.group("data"))
-    else:
-        response = httpx.get(url, timeout=_IMAGE_FETCH_TIMEOUT)
-        response.raise_for_status()
-        image_bytes = response.content
-        fmt_guess = _image_format_from_content_type(response.headers.get("content-type", ""))
-        if not fmt_guess:
-            path = urlparse(url).path
-            fmt_guess = path.rsplit(".", 1)[-1] if "." in path else ""
-        image_format = _normalize_image_format(fmt_guess)
+    image_bytes, image_format = _image_from_data_uri(match) if match else _image_from_remote_url(url)
     return {"image": {"format": image_format, "source": {"bytes": image_bytes}}}
 
 
@@ -107,70 +112,77 @@ def _content_blocks(content: str | list[dict] | None) -> list[dict]:
     return [block for part in content if (block := _block_from_part(part)) is not None]
 
 
-def _to_bedrock_messages(messages: list[dict]) -> tuple[list[dict], list[dict]]:
-    system: list[dict] = []
-    # Flat (role, content_block) pairs, merged into alternating turns below --
+def _system_block(message: dict) -> dict | None:
+    text = _content_text(message.get("content"))
+    return {"text": text} if text else None
+
+
+def _tool_result_turn(message: dict) -> tuple[str, dict]:
+    text = _content_text(message.get("content"))
+    return (
+        "user",
+        {
+            "toolResult": {
+                "toolUseId": message.get("tool_call_id", ""),
+                "content": [{"text": text}],
+            }
+        },
+    )
+
+
+def _tool_use_turn(call: dict) -> tuple[str, dict]:
+    fn = call.get("function", {})
+    try:
+        tool_input = json.loads(fn.get("arguments") or "{}")
+    except (json.JSONDecodeError, TypeError):
+        tool_input = {}
+    return (
+        "assistant",
+        {
+            "toolUse": {
+                "toolUseId": call.get("id", ""),
+                "name": fn.get("name", ""),
+                "input": tool_input,
+            }
+        },
+    )
+
+
+def _turns_for_content_message(message: dict, role: str) -> list[tuple[str, dict]]:
+    turns = [(role, block) for block in _content_blocks(message.get("content"))]
+    if role == "assistant":
+        turns.extend(_tool_use_turn(call) for call in message.get("tool_calls") or [])
+    return turns
+
+
+def _merge_adjacent_turns(turns: list[tuple[str, dict]]) -> list[dict]:
     # Bedrock requires strict user/assistant alternation, so e.g. consecutive
     # "tool" result messages must collapse into one user turn.
-    turns: list[tuple[str, dict]] = []
-
-    for message in messages:
-        role = message.get("role")
-
-        if role == "system":
-            text = _content_text(message.get("content"))
-            if text:
-                system.append({"text": text})
-            continue
-
-        if role == "tool":
-            text = _content_text(message.get("content"))
-            turns.append(
-                (
-                    "user",
-                    {
-                        "toolResult": {
-                            "toolUseId": message.get("tool_call_id", ""),
-                            "content": [{"text": text}],
-                        }
-                    },
-                )
-            )
-            continue
-
-        if role not in ("user", "assistant"):
-            continue
-
-        for block in _content_blocks(message.get("content")):
-            turns.append((role, block))
-
-        if role == "assistant":
-            for call in message.get("tool_calls") or []:
-                fn = call.get("function", {})
-                try:
-                    tool_input = json.loads(fn.get("arguments") or "{}")
-                except (json.JSONDecodeError, TypeError):
-                    tool_input = {}
-                turns.append(
-                    (
-                        "assistant",
-                        {
-                            "toolUse": {
-                                "toolUseId": call.get("id", ""),
-                                "name": fn.get("name", ""),
-                                "input": tool_input,
-                            }
-                        },
-                    )
-                )
-
     converted: list[dict] = []
     for role, block in turns:
         if converted and converted[-1]["role"] == role:
             converted[-1]["content"].append(block)
         else:
             converted.append({"role": role, "content": [block]})
-    return system, converted
+    return converted
+
+
+def _to_bedrock_messages(messages: list[dict]) -> tuple[list[dict], list[dict]]:
+    system: list[dict] = []
+    turns: list[tuple[str, dict]] = []
+
+    for message in messages:
+        role = message.get("role")
+        if role == "system":
+            block = _system_block(message)
+            if block:
+                system.append(block)
+        elif role == "tool":
+            turns.append(_tool_result_turn(message))
+        elif role in ("user", "assistant"):
+            turns.extend(_turns_for_content_message(message, role))
+
+    return system, _merge_adjacent_turns(turns)
 
 
 def _to_bedrock_tool_config(body: dict) -> dict | None:
