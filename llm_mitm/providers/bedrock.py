@@ -398,6 +398,43 @@ async def _fake_stream(body: dict, model_cfg: BedrockModelConfig, usage: Usage) 
     yield chunk({}, choice["finish_reason"])
 
 
+def _tool_call_start_delta(start: dict, tool_call_indexes: dict[int, int]) -> dict | None:
+    tool_use_start = start.get("start", {}).get("toolUse")
+    if not tool_use_start:
+        return None
+    tool_call_index = len(tool_call_indexes)
+    tool_call_indexes[start["contentBlockIndex"]] = tool_call_index
+    return {
+        "tool_calls": [
+            {
+                "index": tool_call_index,
+                "id": tool_use_start["toolUseId"],
+                "type": "function",
+                "function": {"name": tool_use_start["name"], "arguments": ""},
+            }
+        ]
+    }
+
+
+def _content_block_delta(block_delta: dict, tool_call_indexes: dict[int, int]) -> dict | None:
+    # Bedrock's contentBlockIndex also counts text blocks; OpenAI's tool_calls
+    # delta index only counts tool calls, so we remap per tool-use block.
+    delta = block_delta.get("delta", {})
+    if "text" in delta:
+        return {"content": delta["text"]} if delta["text"] else None
+    if "toolUse" in delta:
+        tool_call_index = tool_call_indexes.get(block_delta.get("contentBlockIndex"), 0)
+        return {
+            "tool_calls": [
+                {
+                    "index": tool_call_index,
+                    "function": {"arguments": delta["toolUse"].get("input", "")},
+                }
+            ]
+        }
+    return None
+
+
 async def chat_stream(body: dict, model_cfg: BedrockModelConfig, usage: Usage) -> AsyncIterator[dict]:
     if not model_cfg.supports_tool_streaming and _wants_tool_config(body, model_cfg):
         async for stream_chunk in _fake_stream(body, model_cfg, usage):
@@ -425,8 +462,6 @@ async def chat_stream(body: dict, model_cfg: BedrockModelConfig, usage: Usage) -
     completion_id = f"chatcmpl-{uuid.uuid4().hex}"
     created = int(time.time())
     model_name = body["model"]
-    # Bedrock's contentBlockIndex also counts text blocks; OpenAI's tool_calls
-    # delta index only counts tool calls, so we remap per tool-use block.
     tool_call_indexes: dict[int, int] = {}
 
     chunk = functools.partial(_stream_chunk, completion_id, created, model_name)
@@ -441,41 +476,13 @@ async def chat_stream(body: dict, model_cfg: BedrockModelConfig, usage: Usage) -
         if isinstance(event, Exception):
             raise event
         if "contentBlockStart" in event:
-            start = event["contentBlockStart"]
-            tool_use_start = start.get("start", {}).get("toolUse")
-            if tool_use_start:
-                tool_call_index = len(tool_call_indexes)
-                tool_call_indexes[start["contentBlockIndex"]] = tool_call_index
-                yield chunk(
-                    {
-                        "tool_calls": [
-                            {
-                                "index": tool_call_index,
-                                "id": tool_use_start["toolUseId"],
-                                "type": "function",
-                                "function": {"name": tool_use_start["name"], "arguments": ""},
-                            }
-                        ]
-                    }
-                )
+            delta = _tool_call_start_delta(event["contentBlockStart"], tool_call_indexes)
+            if delta:
+                yield chunk(delta)
         elif "contentBlockDelta" in event:
-            block_delta = event["contentBlockDelta"]
-            delta = block_delta.get("delta", {})
-            if "text" in delta:
-                if delta["text"]:
-                    yield chunk({"content": delta["text"]})
-            elif "toolUse" in delta:
-                tool_call_index = tool_call_indexes.get(block_delta.get("contentBlockIndex"), 0)
-                yield chunk(
-                    {
-                        "tool_calls": [
-                            {
-                                "index": tool_call_index,
-                                "function": {"arguments": delta["toolUse"].get("input", "")},
-                            }
-                        ]
-                    }
-                )
+            delta = _content_block_delta(event["contentBlockDelta"], tool_call_indexes)
+            if delta:
+                yield chunk(delta)
         elif "metadata" in event:
             usage.update(_extract_usage(event["metadata"]))
         elif "messageStop" in event:
