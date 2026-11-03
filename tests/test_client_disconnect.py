@@ -4,7 +4,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import llm_mitm.app as app_module
 
 
-async def _never_finishes_stream(body, model_cfg, usage):
+async def _never_finishes_stream(body, provider, model, usage):
     yield {"delta": "partial"}
     await asyncio.sleep(3600)  # pretend the model is still "thinking"
     yield {"delta": "unreachable"}  # never reached in this test
@@ -32,11 +32,11 @@ def test_abandoned_stream_is_not_recorded_as_ok():
 
     async def run():
         with (
-            patch.object(app_module.ollama, "chat_stream", _never_finishes_stream),
+            patch.object(app_module.openai, "chat_stream", _never_finishes_stream),
             patch.object(app_module, "record_usage", fake_record_usage),
         ):
             request = _fake_request(
-                {"model": "ollama/test-model", "stream": True, "messages": [{"role": "user", "content": "hi"}]}
+                {"model": "local/test-model", "stream": True, "messages": [{"role": "user", "content": "hi"}]}
             )
             response = await app_module.chat_completions(request)
 

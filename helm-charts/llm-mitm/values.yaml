@@ -39,7 +39,7 @@ securityContext: {}
   # runAsUser: 1000
 
 # Rendered as-is into a ConfigMap and mounted at /app/config.yaml. See the
-# project README for the full schema (model_list entries for bedrock/ollama).
+# project README for the full schema (providers, and the models tied to them).
 config:
   server:
     host: 0.0.0.0
@@ -47,6 +47,7 @@ config:
     # JSON logs on stdout, no timestamp field -- the cluster's log
     # collector already stamps arrival time.
     json_logs: true
+  providers: []
   models: []
 
 # Extra container env vars, e.g. AWS credentials if not using IRSA:

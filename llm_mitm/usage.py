@@ -29,6 +29,7 @@ class UsageEvent:
     key_id: str
     model: str
     provider: str
+    driver: str
     prompt_tokens: int
     completion_tokens: int
     cost_usd: float
@@ -71,14 +72,14 @@ def record_usage(event: UsageEvent) -> None:
     # textual/local-mode readability.
     usage_logger.info(json.dumps(fields), extra={JSON_FIELDS: fields})
 
-    REQUESTS.labels(event.model, event.provider, event.key_id, event.status).inc()
-    TOKENS.labels(event.model, event.provider, event.key_id, "prompt").inc(event.prompt_tokens)
-    TOKENS.labels(event.model, event.provider, event.key_id, "completion").inc(event.completion_tokens)
-    TOKENS.labels(event.model, event.provider, event.key_id, "cache_read").inc(event.cache_read_tokens)
-    TOKENS.labels(event.model, event.provider, event.key_id, "cache_write").inc(event.cache_write_tokens)
-    COST_USD.labels(event.model, event.provider, event.key_id).inc(event.cost_usd)
-    REQUEST_DURATION.labels(event.model, event.provider).observe(event.duration_s)
+    REQUESTS.labels(event.model, event.provider, event.driver, event.key_id, event.status).inc()
+    TOKENS.labels(event.model, event.provider, event.driver, event.key_id, "prompt").inc(event.prompt_tokens)
+    TOKENS.labels(event.model, event.provider, event.driver, event.key_id, "completion").inc(event.completion_tokens)
+    TOKENS.labels(event.model, event.provider, event.driver, event.key_id, "cache_read").inc(event.cache_read_tokens)
+    TOKENS.labels(event.model, event.provider, event.driver, event.key_id, "cache_write").inc(event.cache_write_tokens)
+    COST_USD.labels(event.model, event.provider, event.driver, event.key_id).inc(event.cost_usd)
+    REQUEST_DURATION.labels(event.model, event.provider, event.driver).observe(event.duration_s)
     if event.ttft_s is not None:
-        TIME_TO_FIRST_TOKEN.labels(event.model, event.provider).observe(event.ttft_s)
+        TIME_TO_FIRST_TOKEN.labels(event.model, event.provider, event.driver).observe(event.ttft_s)
     if event.tokens_per_second is not None:
-        OUTPUT_TOKENS_PER_SECOND.labels(event.model, event.provider).observe(event.tokens_per_second)
+        OUTPUT_TOKENS_PER_SECOND.labels(event.model, event.provider, event.driver).observe(event.tokens_per_second)

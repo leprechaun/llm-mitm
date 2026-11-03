@@ -2,9 +2,25 @@ server:
   host: 0.0.0.0
   port: 4000
 
+providers:
+  - name: local
+    driver: openai
+    base_url: http://localhost:11434/v1
+  - name: remote
+    driver: openai
+    base_url: http://remote:11434/v1
+  - name: bedrock-us
+    driver: bedrock_converse
+    region: us-west-2
+
 models:
   - name: test-model
-    provider: ollama
-    ollama:
-      base_url: http://localhost:11434
-      model: test-model
+    provider: local
+    model_id: test-model
+  - name: test-model
+    provider: remote
+    model_id: remote-upstream-id
+    input_cost_per_1m: 1000000
+  - name: test-model
+    provider: bedrock-us
+    model_id: bedrock-upstream-id

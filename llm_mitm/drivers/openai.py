@@ -6,38 +6,38 @@ from collections.abc import AsyncIterator
 
 import httpx
 
-from llm_mitm.config import OllamaModelConfig
-from llm_mitm.providers import Usage
+from llm_mitm.config import ModelConfig, OpenAIProviderConfig
+from llm_mitm.drivers import Usage
 
 _TIMEOUT = httpx.Timeout(600.0)
 
 
-def _auth_header(model_cfg: OllamaModelConfig) -> dict[str, str]:
-    if model_cfg.api_key_env is None:
+def _auth_header(provider: OpenAIProviderConfig) -> dict[str, str]:
+    if provider.api_key_env is None:
         return {}
-    key = os.environ.get(model_cfg.api_key_env)
+    key = os.environ.get(provider.api_key_env)
     if not key:
-        raise RuntimeError(f"{model_cfg.api_key_env} is not set -- required by this model's ollama.api_key_env")
+        raise RuntimeError(f"{provider.api_key_env} is not set -- required by provider '{provider.name}'")
     return {"Authorization": f"Bearer {key}"}
 
 
-def _payload(body: dict, model_cfg: OllamaModelConfig, stream: bool) -> dict:
+def _payload(body: dict, model: ModelConfig, stream: bool) -> dict:
     payload = dict(body)
-    payload["model"] = model_cfg.model
+    payload["model"] = model.model_id
     payload["stream"] = stream
     return payload
 
 
-async def chat(body: dict, model_cfg: OllamaModelConfig) -> tuple[dict, Usage]:
-    payload = _payload(body, model_cfg, stream=False)
-    async with httpx.AsyncClient(timeout=_TIMEOUT, headers=_auth_header(model_cfg)) as client:
-        response = await client.post(f"{model_cfg.base_url}/v1/chat/completions", json=payload)
+async def chat(body: dict, provider: OpenAIProviderConfig, model: ModelConfig) -> tuple[dict, Usage]:
+    payload = _payload(body, model, stream=False)
+    async with httpx.AsyncClient(timeout=_TIMEOUT, headers=_auth_header(provider)) as client:
+        response = await client.post(f"{provider.base_url}/chat/completions", json=payload)
         response.raise_for_status()
         data = response.json()
     data["model"] = body["model"]
     response_usage = data.get("usage", {})
-    # Ollama has no prompt-caching or service-tier concept, so
-    # cache_read_tokens/cache_write_tokens/service_tier just keep Usage's
+    # The OpenAI format has no prompt-caching or service-tier fields we read,
+    # so cache_read_tokens/cache_write_tokens/service_tier just keep Usage's
     # defaults (0, 0, None) -- nothing Bedrock-specific to set here.
     usage = Usage(
         prompt_tokens=response_usage.get("prompt_tokens", 0),
@@ -46,17 +46,19 @@ async def chat(body: dict, model_cfg: OllamaModelConfig) -> tuple[dict, Usage]:
     return data, usage
 
 
-async def chat_stream(body: dict, model_cfg: OllamaModelConfig, usage: Usage) -> AsyncIterator[dict]:
-    # Ollama already speaks OpenAI's streaming format, so this is mostly a
-    # passthrough -- we just rewrite the model name back and skim off usage.
+async def chat_stream(
+    body: dict, provider: OpenAIProviderConfig, model: ModelConfig, usage: Usage
+) -> AsyncIterator[dict]:
+    # The upstream already speaks OpenAI's streaming format, so this is mostly
+    # a passthrough -- we just rewrite the model name back and skim off usage.
     # Yields structured chunks, not wire text -- app.py owns framing and
     # appends [DONE] itself once this generator ends, so the upstream's own
     # "[DONE]" line just stops the loop rather than being relayed.
-    payload = _payload(body, model_cfg, stream=True)
+    payload = _payload(body, model, stream=True)
     payload["stream_options"] = {"include_usage": True}
     async with (
-        httpx.AsyncClient(timeout=_TIMEOUT, headers=_auth_header(model_cfg)) as client,
-        client.stream("POST", f"{model_cfg.base_url}/v1/chat/completions", json=payload) as response,
+        httpx.AsyncClient(timeout=_TIMEOUT, headers=_auth_header(provider)) as client,
+        client.stream("POST", f"{provider.base_url}/chat/completions", json=payload) as response,
     ):
         response.raise_for_status()
         async for line in response.aiter_lines():

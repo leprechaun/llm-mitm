@@ -8,7 +8,7 @@ import llm_mitm.app as app_module
 client = TestClient(app_module.app)
 
 
-async def _ok_then_fail_stream(body, model_cfg, usage):
+async def _ok_then_fail_stream(body, provider, model, usage):
     yield {"delta": "hello "}
     yield {"delta": "world"}
     usage.prompt_tokens = 5
@@ -22,11 +22,11 @@ def test_mid_stream_failure_closes_cleanly_instead_of_aborting():
     # "TransferEncodingError: Not enough data to satisfy transfer length
     # header" on real clients) -- it must end with a clean error event + DONE.
     with (
-        patch.object(app_module.ollama, "chat_stream", _ok_then_fail_stream),
+        patch.object(app_module.openai, "chat_stream", _ok_then_fail_stream),
         client.stream(
             "POST",
             "/v1/chat/completions",
-            json={"model": "ollama/test-model", "stream": True, "messages": [{"role": "user", "content": "hi"}]},
+            json={"model": "local/test-model", "stream": True, "messages": [{"role": "user", "content": "hi"}]},
         ) as response,
     ):
         assert response.status_code == 200

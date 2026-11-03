@@ -2,7 +2,7 @@ import pytest
 
 from llm_mitm.accounting import RequestAccounting, _chunk_has_token
 from llm_mitm.config import PricingConfig
-from llm_mitm.providers import Usage
+from llm_mitm.drivers import Usage
 
 
 def _fake_clock(*times: float):
@@ -42,7 +42,7 @@ def test_finish_records_usage_event_with_computed_cost():
     accounting = RequestAccounting(
         "sk-test",
         "m",
-        "bedrock",
+        "bedrock", "bedrock_converse",
         PricingConfig(input_cost_per_1m=1.0, output_cost_per_1m=2.0),
         clock=_fake_clock(100.0, 102.5),
         sink=captured.append,
@@ -55,6 +55,7 @@ def test_finish_records_usage_event_with_computed_cost():
     assert event.key_id == "sk-test"
     assert event.model == "m"
     assert event.provider == "bedrock"
+    assert event.driver == "bedrock_converse"
     assert event.prompt_tokens == 1_000_000
     assert event.completion_tokens == 500_000
     assert event.cost_usd == pytest.approx(1.0 + 1.0)  # 1M * $1 + 0.5M * $2
@@ -70,7 +71,7 @@ def test_observe_chunk_sets_ttft_once_on_first_real_token():
     # The clock is only consulted on a chunk that actually has a token, and
     # only the first time -- a second token chunk must not call it again.
     accounting = RequestAccounting(
-        "sk-test", "m", "bedrock", PricingConfig(), clock=_fake_clock(0.0, 0.4, 2.0), sink=captured.append
+        "sk-test", "m", "bedrock", "bedrock_converse", PricingConfig(), clock=_fake_clock(0.0, 0.4, 2.0), sink=captured.append
     )
     accounting.observe_chunk({"choices": [{"delta": {"role": "assistant"}}]})
     accounting.observe_chunk({"choices": [{"delta": {"content": "hi"}}]})
@@ -87,7 +88,7 @@ def test_observe_chunk_leaves_ttft_none_without_a_token_chunk():
     # Only two clock calls expected: construction and finish -- observe_chunk
     # must never consult the clock when nothing it sees carries a token.
     accounting = RequestAccounting(
-        "sk-test", "m", "bedrock", PricingConfig(), clock=_fake_clock(0.0, 1.0), sink=captured.append
+        "sk-test", "m", "bedrock", "bedrock_converse", PricingConfig(), clock=_fake_clock(0.0, 1.0), sink=captured.append
     )
     accounting.observe_chunk({"choices": [{"delta": {"role": "assistant"}}]})
     accounting.observe_chunk({"choices": [{"delta": {}, "finish_reason": "stop"}]})
@@ -99,7 +100,7 @@ def test_observe_chunk_leaves_ttft_none_without_a_token_chunk():
 def test_observe_chunk_tolerates_usage_only_chunk_before_any_token():
     captured = []
     accounting = RequestAccounting(
-        "sk-test", "m", "ollama", PricingConfig(), clock=_fake_clock(0.0, 1.0), sink=captured.append
+        "sk-test", "m", "ollama", "openai", PricingConfig(), clock=_fake_clock(0.0, 1.0), sink=captured.append
     )
     accounting.observe_chunk({"choices": [{"delta": {"role": "assistant"}}]})
     accounting.observe_chunk({"choices": [], "usage": {"prompt_tokens": 1, "completion_tokens": 1}})
@@ -115,7 +116,7 @@ def test_finish_with_empty_usage_has_zero_cost():
     accounting = RequestAccounting(
         "sk-test",
         "m",
-        "bedrock",
+        "bedrock", "bedrock_converse",
         PricingConfig(input_cost_per_1m=5.0, output_cost_per_1m=10.0),
         clock=_fake_clock(0.0, 0.1),
         sink=captured.append,

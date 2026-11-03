@@ -5,18 +5,24 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from llm_mitm.config import BedrockModelConfig
-from llm_mitm.providers import Usage, bedrock
+from llm_mitm.config import (
+    BedrockConverseOptions,
+    BedrockConverseProviderConfig,
+    ModelConfig,
+)
+from llm_mitm.drivers import Usage, bedrock_converse
+
+_PROVIDER = BedrockConverseProviderConfig(name="bedrock-us", driver="bedrock_converse", region="us-west-2")
 
 
-def _cfg(**overrides) -> BedrockModelConfig:
-    defaults = {"model_id": "test-model", "region": "us-east-1"}
-    defaults.update(overrides)
-    return BedrockModelConfig(**defaults)
+def _cfg(**options) -> ModelConfig:
+    return ModelConfig(
+        name="test", provider="bedrock-us", model_id="test-model", options=BedrockConverseOptions(**options)
+    )
 
 
 def test_to_bedrock_messages_splits_system():
-    system, messages = bedrock._to_bedrock_messages(
+    system, messages = bedrock_converse._to_bedrock_messages(
         [
             {"role": "system", "content": "be helpful"},
             {"role": "user", "content": "hi"},
@@ -30,7 +36,7 @@ def test_to_bedrock_messages_merges_consecutive_same_role():
     # An assistant tool_calls message followed by two tool results must
     # collapse into a single alternating user/assistant sequence -- Bedrock
     # rejects back-to-back same-role messages.
-    _, messages = bedrock._to_bedrock_messages(
+    _, messages = bedrock_converse._to_bedrock_messages(
         [
             {"role": "user", "content": "do two things"},
             {
@@ -51,7 +57,7 @@ def test_to_bedrock_messages_merges_consecutive_same_role():
 
 
 def test_to_bedrock_messages_tool_call_arguments_parsed_to_dict():
-    _, messages = bedrock._to_bedrock_messages(
+    _, messages = bedrock_converse._to_bedrock_messages(
         [
             {
                 "role": "assistant",
@@ -74,7 +80,7 @@ def test_to_bedrock_messages_tool_call_arguments_parsed_to_dict():
 
 
 def test_to_bedrock_messages_handles_invalid_tool_call_json():
-    _, messages = bedrock._to_bedrock_messages(
+    _, messages = bedrock_converse._to_bedrock_messages(
         [
             {
                 "role": "assistant",
@@ -89,12 +95,12 @@ def test_to_bedrock_messages_handles_invalid_tool_call_json():
 
 
 def test_tool_config_omitted_without_tools():
-    assert bedrock._to_bedrock_tool_config({"messages": []}) is None
+    assert bedrock_converse._to_bedrock_tool_config({"messages": []}) is None
 
 
 def test_tool_config_auto():
     body = {"tools": [{"type": "function", "function": {"name": "execute", "parameters": {}}}]}
-    config = bedrock._to_bedrock_tool_config(body)
+    config = bedrock_converse._to_bedrock_tool_config(body)
     assert "toolChoice" not in config
     assert config["tools"][0]["toolSpec"]["name"] == "execute"
 
@@ -104,7 +110,7 @@ def test_tool_config_required_maps_to_any():
         "tools": [{"type": "function", "function": {"name": "execute", "parameters": {}}}],
         "tool_choice": "required",
     }
-    assert bedrock._to_bedrock_tool_config(body)["toolChoice"] == {"any": {}}
+    assert bedrock_converse._to_bedrock_tool_config(body)["toolChoice"] == {"any": {}}
 
 
 def test_tool_config_named_choice():
@@ -112,7 +118,7 @@ def test_tool_config_named_choice():
         "tools": [{"type": "function", "function": {"name": "execute", "parameters": {}}}],
         "tool_choice": {"type": "function", "function": {"name": "execute"}},
     }
-    assert bedrock._to_bedrock_tool_config(body)["toolChoice"] == {"tool": {"name": "execute"}}
+    assert bedrock_converse._to_bedrock_tool_config(body)["toolChoice"] == {"tool": {"name": "execute"}}
 
 
 def test_tool_config_none_keeps_tools_but_omits_tool_choice():
@@ -126,7 +132,7 @@ def test_tool_config_none_keeps_tools_but_omits_tool_choice():
         "tools": [{"type": "function", "function": {"name": "execute", "parameters": {}}}],
         "tool_choice": "none",
     }
-    config = bedrock._to_bedrock_tool_config(body)
+    config = bedrock_converse._to_bedrock_tool_config(body)
     assert config is not None
     assert config["tools"][0]["toolSpec"]["name"] == "execute"
     assert "toolChoice" not in config
@@ -139,7 +145,7 @@ def test_prompt_caching_inserts_cache_points():
         "messages": [{"role": "system", "content": "sys"}, {"role": "user", "content": "hi"}],
         "tools": [{"type": "function", "function": {"name": "execute", "parameters": {}}}],
     }
-    kwargs = bedrock._converse_kwargs(body, cfg)
+    kwargs = bedrock_converse._converse_kwargs(body, cfg)
     assert kwargs["system"][-1] == {"cachePoint": {"type": "default"}}
     assert kwargs["toolConfig"]["tools"][-1] == {"cachePoint": {"type": "default"}}
     assert kwargs["messages"][-1]["content"][-1] == {"cachePoint": {"type": "default"}}
@@ -148,7 +154,7 @@ def test_prompt_caching_inserts_cache_points():
 def test_prompt_caching_disabled_by_default():
     cfg = _cfg()
     body = {"model": "m", "messages": [{"role": "user", "content": "hi"}]}
-    kwargs = bedrock._converse_kwargs(body, cfg)
+    kwargs = bedrock_converse._converse_kwargs(body, cfg)
     assert "cachePoint" not in json.dumps(kwargs)
 
 
@@ -171,8 +177,8 @@ def test_chat_maps_stop_reason(stop_reason, finish_reason):
     }
     fake_client = MagicMock()
     fake_client.converse.return_value = fake_response
-    with patch.object(bedrock, "_client", return_value=fake_client):
-        data, *_ = asyncio.run(bedrock.chat({"model": "m", "messages": [{"role": "user", "content": "hi"}]}, cfg))
+    with patch.object(bedrock_converse, "_client", return_value=fake_client):
+        data, *_ = asyncio.run(bedrock_converse.chat({"model": "m", "messages": [{"role": "user", "content": "hi"}]}, _PROVIDER, cfg))
     assert data["choices"][0]["finish_reason"] == finish_reason
 
 
@@ -192,9 +198,9 @@ def test_chat_extracts_tool_calls():
     }
     fake_client = MagicMock()
     fake_client.converse.return_value = fake_response
-    with patch.object(bedrock, "_client", return_value=fake_client):
+    with patch.object(bedrock_converse, "_client", return_value=fake_client):
         data, usage = asyncio.run(
-            bedrock.chat({"model": "m", "messages": [{"role": "user", "content": "hi"}]}, cfg)
+            bedrock_converse.chat({"model": "m", "messages": [{"role": "user", "content": "hi"}]}, _PROVIDER, cfg)
         )
     message = data["choices"][0]["message"]
     assert message["content"] == "Sure, let me check."
@@ -213,7 +219,7 @@ def test_extract_usage_reads_sibling_usage_and_service_tier_keys():
     # Shared by chat()'s Converse response and chat_stream()'s metadata
     # event -- both carry sibling "usage"/"serviceTier" keys at the same
     # nesting level.
-    usage = bedrock._extract_usage(
+    usage = bedrock_converse._extract_usage(
         {
             "usage": {
                 "inputTokens": 20,
@@ -230,7 +236,7 @@ def test_extract_usage_reads_sibling_usage_and_service_tier_keys():
 
 
 def test_extract_usage_defaults_when_keys_missing():
-    assert bedrock._extract_usage({}) == Usage()
+    assert bedrock_converse._extract_usage({}) == Usage()
 
 
 def test_chat_extracts_cache_tokens():
@@ -247,8 +253,8 @@ def test_chat_extracts_cache_tokens():
     }
     fake_client = MagicMock()
     fake_client.converse.return_value = fake_response
-    with patch.object(bedrock, "_client", return_value=fake_client):
-        _, usage = asyncio.run(bedrock.chat({"model": "m", "messages": [{"role": "user", "content": "hi"}]}, cfg))
+    with patch.object(bedrock_converse, "_client", return_value=fake_client):
+        _, usage = asyncio.run(bedrock_converse.chat({"model": "m", "messages": [{"role": "user", "content": "hi"}]}, _PROVIDER, cfg))
     assert usage == Usage(prompt_tokens=20, completion_tokens=5, cache_read_tokens=5000, cache_write_tokens=300)
 
 
@@ -277,9 +283,9 @@ def test_chat_stream_translates_text_and_tool_calls():
     async def run():
         usage = Usage()
         payloads = []
-        with patch.object(bedrock, "_client", return_value=fake_client):
+        with patch.object(bedrock_converse, "_client", return_value=fake_client):
             body = {"model": "m", "messages": [{"role": "user", "content": "hi"}]}
-            async for chunk in bedrock.chat_stream(body, cfg, usage):
+            async for chunk in bedrock_converse.chat_stream(body, _PROVIDER, cfg, usage):
                 payloads.append(chunk)
         return payloads, usage
 
@@ -331,8 +337,8 @@ def test_chat_stream_falls_back_to_blocking_call_when_tool_streaming_unsupported
     async def run():
         usage = Usage()
         payloads = []
-        with patch.object(bedrock, "_client", return_value=fake_client):
-            async for chunk in bedrock.chat_stream(body, cfg, usage):
+        with patch.object(bedrock_converse, "_client", return_value=fake_client):
+            async for chunk in bedrock_converse.chat_stream(body, _PROVIDER, cfg, usage):
                 payloads.append(chunk)
         return payloads, usage
 
@@ -352,14 +358,14 @@ def test_chat_stream_falls_back_to_blocking_call_when_tool_streaming_unsupported
 def test_service_tier_omitted_by_default():
     cfg = _cfg()
     body = {"model": "m", "messages": [{"role": "user", "content": "hi"}]}
-    kwargs = bedrock._converse_kwargs(body, cfg)
+    kwargs = bedrock_converse._converse_kwargs(body, cfg)
     assert "serviceTier" not in kwargs
 
 
 def test_service_tier_included_when_configured():
     cfg = _cfg(service_tier="flex")
     body = {"model": "m", "messages": [{"role": "user", "content": "hi"}]}
-    kwargs = bedrock._converse_kwargs(body, cfg)
+    kwargs = bedrock_converse._converse_kwargs(body, cfg)
     assert kwargs["serviceTier"] == {"type": "flex"}
 
 
@@ -376,8 +382,8 @@ def test_chat_extracts_resolved_service_tier():
     }
     fake_client = MagicMock()
     fake_client.converse.return_value = fake_response
-    with patch.object(bedrock, "_client", return_value=fake_client):
-        _, usage = asyncio.run(bedrock.chat({"model": "m", "messages": [{"role": "user", "content": "hi"}]}, cfg))
+    with patch.object(bedrock_converse, "_client", return_value=fake_client):
+        _, usage = asyncio.run(bedrock_converse.chat({"model": "m", "messages": [{"role": "user", "content": "hi"}]}, _PROVIDER, cfg))
     assert usage.service_tier == "flex"
 
 
@@ -395,9 +401,9 @@ def test_chat_stream_extracts_resolved_service_tier():
 
     async def run():
         usage = Usage()
-        with patch.object(bedrock, "_client", return_value=fake_client):
+        with patch.object(bedrock_converse, "_client", return_value=fake_client):
             body = {"model": "m", "messages": [{"role": "user", "content": "hi"}]}
-            async for _ in bedrock.chat_stream(body, cfg, usage):
+            async for _ in bedrock_converse.chat_stream(body, _PROVIDER, cfg, usage):
                 pass
         return usage
 
@@ -412,7 +418,7 @@ def test_tools_dropped_entirely_when_model_does_not_support_them():
         "messages": [{"role": "user", "content": "hi"}],
         "tools": [{"type": "function", "function": {"name": "execute", "parameters": {}}}],
     }
-    kwargs = bedrock._converse_kwargs(body, cfg)
+    kwargs = bedrock_converse._converse_kwargs(body, cfg)
     assert "toolConfig" not in kwargs
 
 
@@ -438,7 +444,7 @@ def test_tool_choice_none_with_prior_tool_use_still_includes_tool_config():
         "tools": [{"type": "function", "function": {"name": "execute", "parameters": {}}}],
         "tool_choice": "none",
     }
-    kwargs = bedrock._converse_kwargs(body, cfg)
+    kwargs = bedrock_converse._converse_kwargs(body, cfg)
     assert "toolConfig" in kwargs
     assert "toolChoice" not in kwargs["toolConfig"]
 
@@ -459,7 +465,7 @@ def test_image_data_uri_decoded_to_bedrock_image_block():
             }
         ],
     }
-    kwargs = bedrock._converse_kwargs(body, cfg)
+    kwargs = bedrock_converse._converse_kwargs(body, cfg)
     content = kwargs["messages"][0]["content"]
     assert content[0] == {"text": "what is this?"}
     assert content[1] == {"image": {"format": "png", "source": {"bytes": png_bytes}}}
@@ -469,7 +475,7 @@ def test_image_jpg_extension_aliases_to_jpeg():
     data_uri = "data:image/jpg;base64," + base64.b64encode(b"fake").decode()
     cfg = _cfg()
     body = {"model": "m", "messages": [{"role": "user", "content": [{"type": "image_url", "image_url": {"url": data_uri}}]}]}
-    kwargs = bedrock._converse_kwargs(body, cfg)
+    kwargs = bedrock_converse._converse_kwargs(body, cfg)
     assert kwargs["messages"][0]["content"][0]["image"]["format"] == "jpeg"
 
 
@@ -478,7 +484,7 @@ def test_image_unsupported_format_raises():
     cfg = _cfg()
     body = {"model": "m", "messages": [{"role": "user", "content": [{"type": "image_url", "image_url": {"url": data_uri}}]}]}
     with pytest.raises(ValueError, match="unsupported image format"):
-        bedrock._converse_kwargs(body, cfg)
+        bedrock_converse._converse_kwargs(body, cfg)
 
 
 def test_image_remote_url_is_fetched_and_format_detected_from_content_type():
@@ -494,7 +500,7 @@ def test_image_remote_url_is_fetched_and_format_detected_from_content_type():
         ],
     }
     with patch("httpx.get", return_value=fake_response) as mock_get:
-        kwargs = bedrock._converse_kwargs(body, cfg)
+        kwargs = bedrock_converse._converse_kwargs(body, cfg)
     mock_get.assert_called_once()
     assert mock_get.call_args[0][0] == "https://example.com/photo.jpg"
     image = kwargs["messages"][0]["content"][0]["image"]
@@ -504,7 +510,7 @@ def test_image_remote_url_is_fetched_and_format_detected_from_content_type():
 def test_text_only_message_unaffected_by_image_handling():
     cfg = _cfg()
     body = {"model": "m", "messages": [{"role": "user", "content": "just text"}]}
-    kwargs = bedrock._converse_kwargs(body, cfg)
+    kwargs = bedrock_converse._converse_kwargs(body, cfg)
     assert kwargs["messages"][0]["content"] == [{"text": "just text"}]
 
 
@@ -521,10 +527,25 @@ def test_chat_stream_raises_when_no_message_stop_ever_arrives():
     async def run():
         usage = Usage()
         chunks = []
-        with patch.object(bedrock, "_client", return_value=fake_client):
-            async for sse in bedrock.chat_stream(body, cfg, usage):
+        with patch.object(bedrock_converse, "_client", return_value=fake_client):
+            async for sse in bedrock_converse.chat_stream(body, _PROVIDER, cfg, usage):
                 chunks.append(sse)
         return chunks
 
     with pytest.raises(RuntimeError, match="messageStop"):
         asyncio.run(run())
+
+
+def test_chat_connects_to_the_providers_region():
+    fake_client = MagicMock()
+    fake_client.converse.return_value = {
+        "output": {"message": {"content": [{"text": "hi"}]}},
+        "usage": {"inputTokens": 1, "outputTokens": 1},
+    }
+    body = {"model": "bedrock-us/test", "messages": [{"role": "user", "content": "hi"}]}
+
+    with patch.object(bedrock_converse.boto3, "client", return_value=fake_client) as make_client:
+        asyncio.run(bedrock_converse.chat(body, _PROVIDER, _cfg()))
+
+    make_client.assert_called_once_with("bedrock-runtime", region_name="us-west-2")
+    assert fake_client.converse.call_args.kwargs["modelId"] == "test-model"

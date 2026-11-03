@@ -10,27 +10,14 @@ from prometheus_client import CONTENT_TYPE_LATEST, generate_latest
 
 from llm_mitm.accounting import RequestAccounting
 from llm_mitm.auth import get_key_id
-from llm_mitm.config import (
-    BedrockMantleModelConfig,
-    BedrockModelConfig,
-    OllamaModelConfig,
-    load_config,
-)
-from llm_mitm.providers import Usage, bedrock, bedrock_mantle, ollama
+from llm_mitm.config import load_config
+from llm_mitm.drivers import Usage, bedrock_converse, openai
 from llm_mitm.usage import record_usage
 
 CONFIG_PATH = os.environ.get("LLM_MITM_CONFIG", "config.yaml")
 config = load_config(CONFIG_PATH)
 MODELS = {m.id: m for m in config.models}
-# Keyed by config type rather than the "provider" string -- "bedrock" covers
-# two wire protocols (Converse vs the bedrock-mantle OpenAI-compatible
-# endpoint), and which config block a model populated is what picks between
-# them, not a separate provider namespace.
-PROVIDERS = {
-    BedrockModelConfig: bedrock,
-    BedrockMantleModelConfig: bedrock_mantle,
-    OllamaModelConfig: ollama,
-}
+DRIVERS = {"bedrock_converse": bedrock_converse, "openai": openai}
 
 app = FastAPI(title="llm-mitm")
 logger = logging.getLogger("llm_mitm")
@@ -75,13 +62,15 @@ async def chat_completions(request: Request):
         return _openai_error("field 'messages' is required", "invalid_request_error", 400)
 
     key_id = get_key_id(request, hash_api_keys=config.server.hash_api_keys)
-    provider_cfg = model_entry.provider_config
-    provider = PROVIDERS[type(provider_cfg)]
+    provider = config.provider_for(model_entry)
+    driver = DRIVERS[provider.driver]
     stream = bool(body.get("stream", False))
     # sink=record_usage passed explicitly (rather than relying on
     # RequestAccounting's default) so tests can still patch
     # llm_mitm.app.record_usage, same as before this refactor.
-    accounting = RequestAccounting(key_id, model_name, model_entry.provider, provider_cfg, sink=record_usage)
+    accounting = RequestAccounting(
+        key_id, model_name, provider.name, provider.driver, model_entry, sink=record_usage
+    )
 
     if stream:
         usage = Usage()
@@ -98,7 +87,7 @@ async def chat_completions(request: Request):
                 # Providers yield structured chunks, not wire text -- this
                 # is the one place that knows about SSE framing ("data: ",
                 # json.dumps, [DONE]).
-                async for payload in provider.chat_stream(body, provider_cfg, usage):
+                async for payload in driver.chat_stream(body, provider, model_entry, usage):
                     accounting.observe_chunk(payload)
                     yield f"data: {json.dumps(payload)}\n\n"
                 yield "data: [DONE]\n\n"
@@ -114,7 +103,7 @@ async def chat_completions(request: Request):
         return StreamingResponse(generate(), media_type="text/event-stream")
 
     try:
-        data, usage = await provider.chat(body, provider_cfg)
+        data, usage = await driver.chat(body, provider, model_entry)
     except Exception as exc:  # noqa: BLE001 -- turned into a clean upstream_error response below
         accounting.finish(Usage(), "error", stream=False)
         return _openai_error(str(exc), "upstream_error", 502)

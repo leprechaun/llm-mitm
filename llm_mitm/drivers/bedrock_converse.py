@@ -16,8 +16,8 @@ from urllib.parse import urlparse
 import boto3
 import httpx
 
-from llm_mitm.config import BedrockModelConfig
-from llm_mitm.providers import Usage
+from llm_mitm.config import BedrockConverseProviderConfig, ModelConfig
+from llm_mitm.drivers import Usage
 
 _STOP_REASON_MAP = {
     "end_turn": "stop",
@@ -257,25 +257,25 @@ def _apply_prompt_caching(kwargs: dict) -> None:
         messages[-1]["content"].append({"cachePoint": {"type": "default"}})
 
 
-def _wants_tool_config(body: dict, model_cfg: BedrockModelConfig) -> bool:
-    return bool(model_cfg.supports_tools and _to_bedrock_tool_config(body))
+def _wants_tool_config(body: dict, model: ModelConfig) -> bool:
+    return bool(model.options.supports_tools and _to_bedrock_tool_config(body))
 
 
-def _converse_kwargs(body: dict, model_cfg: BedrockModelConfig) -> dict:
+def _converse_kwargs(body: dict, model: ModelConfig) -> dict:
     system, messages = _to_bedrock_messages(body["messages"])
     kwargs: dict[str, Any] = {
-        "modelId": model_cfg.model_id,
+        "modelId": model.model_id,
         "messages": messages,
         "inferenceConfig": _inference_config(body),
     }
     if system:
         kwargs["system"] = system
-    if _wants_tool_config(body, model_cfg):
+    if _wants_tool_config(body, model):
         kwargs["toolConfig"] = _to_bedrock_tool_config(body)
-    if model_cfg.prompt_caching:
+    if model.options.prompt_caching:
         _apply_prompt_caching(kwargs)
-    if model_cfg.service_tier:
-        kwargs["serviceTier"] = {"type": model_cfg.service_tier}
+    if model.options.service_tier:
+        kwargs["serviceTier"] = {"type": model.options.service_tier}
     return kwargs
 
 
@@ -291,7 +291,7 @@ def _extract_usage(container: dict) -> Usage:
         cache_write_tokens=usage_dict.get("cacheWriteInputTokens", 0),
         # The tier that actually served the request -- can differ from the
         # requested tier (e.g. "flex" falling back to Standard capacity), so
-        # billing must read this instead of trusting model_cfg.service_tier.
+        # billing must read this instead of trusting options.service_tier.
         service_tier=container.get("serviceTier", {}).get("type"),
     )
 
@@ -339,10 +339,10 @@ def _openai_response(
     }
 
 
-async def chat(body: dict, model_cfg: BedrockModelConfig) -> tuple[dict, Usage]:
-    client = _client(model_cfg.region)
+async def chat(body: dict, provider: BedrockConverseProviderConfig, model: ModelConfig) -> tuple[dict, Usage]:
+    client = _client(provider.region)
     # Off the event loop: may do a blocking fetch for a remote image_url.
-    kwargs = await asyncio.to_thread(_converse_kwargs, body, model_cfg)
+    kwargs = await asyncio.to_thread(_converse_kwargs, body, model)
     response = await asyncio.to_thread(client.converse, **kwargs)
     content_blocks = response["output"]["message"]["content"]
     text = "".join(block.get("text", "") for block in content_blocks if "text" in block)
@@ -366,12 +366,14 @@ async def chat(body: dict, model_cfg: BedrockModelConfig) -> tuple[dict, Usage]:
     return data, usage
 
 
-async def _fake_stream(body: dict, model_cfg: BedrockModelConfig, usage: Usage) -> AsyncIterator[dict]:
+async def _fake_stream(
+    body: dict, provider: BedrockConverseProviderConfig, model: ModelConfig, usage: Usage
+) -> AsyncIterator[dict]:
     # Fallback for models that reject tool use combined with ConverseStream:
     # do a normal blocking call and replay it as a single-shot stream of
     # chunks so the client still gets the streaming response shape it asked
     # for. Yields structured chunks, not wire text -- app.py owns framing.
-    data, result_usage = await chat(body, model_cfg)
+    data, result_usage = await chat(body, provider, model)
     usage.update(result_usage)
 
     choice = data["choices"][0]
@@ -435,9 +437,11 @@ def _content_block_delta(block_delta: dict, tool_call_indexes: dict[int, int]) -
     return None
 
 
-async def chat_stream(body: dict, model_cfg: BedrockModelConfig, usage: Usage) -> AsyncIterator[dict]:
-    if not model_cfg.supports_tool_streaming and _wants_tool_config(body, model_cfg):
-        async for stream_chunk in _fake_stream(body, model_cfg, usage):
+async def chat_stream(
+    body: dict, provider: BedrockConverseProviderConfig, model: ModelConfig, usage: Usage
+) -> AsyncIterator[dict]:
+    if not model.options.supports_tool_streaming and _wants_tool_config(body, model):
+        async for stream_chunk in _fake_stream(body, provider, model, usage):
             yield stream_chunk
         return
 
@@ -447,8 +451,8 @@ async def chat_stream(body: dict, model_cfg: BedrockModelConfig, usage: Usage) -
 
     def producer() -> None:
         try:
-            client = _client(model_cfg.region)
-            kwargs = _converse_kwargs(body, model_cfg)
+            client = _client(provider.region)
+            kwargs = _converse_kwargs(body, model)
             response = client.converse_stream(**kwargs)
             for event in response["stream"]:
                 loop.call_soon_threadsafe(q.put, event)

@@ -2,6 +2,7 @@ import json
 import logging
 
 import pytest
+from prometheus_client import generate_latest
 
 from llm_mitm.logging_setup import JSON_FIELDS, _JsonFormatter
 from llm_mitm.usage import UsageEvent, record_usage
@@ -12,6 +13,7 @@ def test_record_usage_emits_flat_json_via_extra():
         key_id="sk-openwebui",
         model="claude-haiku-5.5",
         provider="bedrock",
+        driver="bedrock_converse",
         prompt_tokens=395,
         completion_tokens=90,
         cost_usd=8.45e-05,
@@ -55,6 +57,7 @@ def _event(**overrides) -> UsageEvent:
         "key_id": "sk-test",
         "model": "m",
         "provider": "bedrock",
+        "driver": "bedrock_converse",
         "prompt_tokens": 10,
         "completion_tokens": 100,
         "cost_usd": 0.0,
@@ -100,12 +103,51 @@ def test_tokens_per_second_explicit_value_is_not_overridden():
 def test_record_usage_observes_ttft_and_tps_metrics():
     from llm_mitm.metrics import OUTPUT_TOKENS_PER_SECOND, TIME_TO_FIRST_TOKEN
 
-    before_ttft = TIME_TO_FIRST_TOKEN.labels("m", "bedrock")._sum.get()
-    before_tps = OUTPUT_TOKENS_PER_SECOND.labels("m", "bedrock")._sum.get()
+    before_ttft = TIME_TO_FIRST_TOKEN.labels("m", "bedrock", "bedrock_converse")._sum.get()
+    before_tps = OUTPUT_TOKENS_PER_SECOND.labels("m", "bedrock", "bedrock_converse")._sum.get()
 
     record_usage(_event(duration_s=2.0, ttft_s=0.5, completion_tokens=100))
 
-    assert TIME_TO_FIRST_TOKEN.labels("m", "bedrock")._sum.get() == pytest.approx(before_ttft + 0.5)
-    assert OUTPUT_TOKENS_PER_SECOND.labels("m", "bedrock")._sum.get() == pytest.approx(
+    assert TIME_TO_FIRST_TOKEN.labels("m", "bedrock", "bedrock_converse")._sum.get() == pytest.approx(before_ttft + 0.5)
+    assert OUTPUT_TOKENS_PER_SECOND.labels("m", "bedrock", "bedrock_converse")._sum.get() == pytest.approx(
         before_tps + 100 / 1.5
     )
+
+
+def test_record_usage_logs_the_driver():
+    captured: list[logging.LogRecord] = []
+
+    class _CaptureHandler(logging.Handler):
+        def emit(self, record: logging.LogRecord) -> None:
+            captured.append(record)
+
+    usage_logger = logging.getLogger("llm_mitm.usage")
+    handler = _CaptureHandler()
+    usage_logger.addHandler(handler)
+    try:
+        record_usage(_event(driver="bedrock_converse"))
+    finally:
+        usage_logger.removeHandler(handler)
+
+    assert json.loads(_JsonFormatter().format(captured[0]))["driver"] == "bedrock_converse"
+
+
+@pytest.mark.parametrize(
+    "metric",
+    [
+        "llm_mitm_requests_total",
+        "llm_mitm_tokens_total",
+        "llm_mitm_cost_usd_total",
+        "llm_mitm_request_duration_seconds_count",
+        "llm_mitm_time_to_first_token_seconds_count",
+        "llm_mitm_output_tokens_per_second_count",
+    ],
+)
+def test_every_metric_is_labeled_with_the_driver(metric):
+    record_usage(_event(model="driver-label-test", driver="openai", ttft_s=0.5))
+
+    exposed = generate_latest().decode().splitlines()
+
+    series = [line for line in exposed if line.startswith(f"{metric}{{") and 'model="driver-label-test"' in line]
+    assert series
+    assert all('driver="openai"' in line for line in series)

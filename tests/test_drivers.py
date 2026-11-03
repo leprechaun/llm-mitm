@@ -1,4 +1,4 @@
-from llm_mitm.providers import Usage
+from llm_mitm.drivers import Usage
 
 
 def test_usage_update_copies_all_fields_in_place():

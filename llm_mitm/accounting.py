@@ -4,8 +4,8 @@ import time
 from collections.abc import Callable
 
 from llm_mitm.config import PricingConfig
+from llm_mitm.drivers import Usage
 from llm_mitm.pricing import compute_cost
-from llm_mitm.providers import Usage
 from llm_mitm.usage import UsageEvent, record_usage
 
 
@@ -40,7 +40,8 @@ class RequestAccounting:
         key_id: str,
         model_name: str,
         provider_name: str,
-        provider_cfg: PricingConfig,
+        driver_name: str,
+        pricing: PricingConfig,
         *,
         clock: Callable[[], float] = time.monotonic,
         sink: Callable[[UsageEvent], None] = record_usage,
@@ -48,7 +49,8 @@ class RequestAccounting:
         self.key_id = key_id
         self.model_name = model_name
         self.provider_name = provider_name
-        self.provider_cfg = provider_cfg
+        self.driver_name = driver_name
+        self.pricing = pricing
         self._clock = clock
         self._sink = sink
         self._start = clock()
@@ -64,7 +66,7 @@ class RequestAccounting:
 
     def finish(self, usage: Usage, status: str, *, stream: bool) -> None:
         cost = compute_cost(
-            self.provider_cfg,
+            self.pricing,
             usage.prompt_tokens,
             usage.completion_tokens,
             usage.cache_read_tokens,
@@ -76,6 +78,7 @@ class RequestAccounting:
                 key_id=self.key_id,
                 model=self.model_name,
                 provider=self.provider_name,
+                driver=self.driver_name,
                 prompt_tokens=usage.prompt_tokens,
                 completion_tokens=usage.completion_tokens,
                 cache_read_tokens=usage.cache_read_tokens,

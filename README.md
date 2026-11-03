@@ -2,7 +2,8 @@
 
 A tiny, self-hosted replacement for the parts of [litellm](https://github.com/BerriAI/litellm)
 actually needed here: an OpenAI-compatible `/v1/chat/completions` endpoint that
-fans out to **Amazon Bedrock** (via the Converse API) and **Ollama**, with
+fans out to **Amazon Bedrock** (via the Converse API) and anything
+OpenAI-compatible (**Ollama**, Bedrock's bedrock-mantle, ...), with
 per-API-key cost/usage tracking exported as structured stdout logs and
 Prometheus metrics.
 
@@ -17,6 +18,15 @@ Prometheus metrics.
 
 ## Configure
 
+Three concepts make up the config:
+
+- A **driver** is an API format, implemented in code: `bedrock_converse` or
+  `openai` (anything speaking OpenAI's chat completions format).
+- A **provider** is a configured endpoint using a driver, with its own name,
+  location and credentials. There can be several per driver.
+- A **model** is a client-facing name tied to one provider, with its upstream
+  id, pricing and any driver-specific options.
+
 Edit `config.yaml`:
 
 ```yaml
@@ -24,44 +34,54 @@ server:
   host: 0.0.0.0
   port: 4000
 
+providers:
+  - name: bedrock-us
+    driver: bedrock_converse
+    region: us-east-1
+
+  - name: virty
+    driver: openai
+    base_url: http://localhost:11434/v1   # includes the version prefix
+
 models:
-  - name: claude-sonnet          # combined with provider below -> "bedrock/claude-sonnet"
-    provider: bedrock
-    bedrock:
-      model_id: anthropic.claude-3-5-sonnet-20241022-v2:0
-      region: us-east-1
-      input_cost_per_1m: 3.00    # USD, used for cost tracking only
-      output_cost_per_1m: 15.00
+  - name: claude-sonnet          # combined with provider below -> "bedrock-us/claude-sonnet"
+    provider: bedrock-us
+    model_id: anthropic.claude-3-5-sonnet-20241022-v2:0
+    input_cost_per_1m: 3.00      # USD, used for cost tracking only
+    output_cost_per_1m: 15.00
 
   - name: llama3
-    provider: ollama
-    ollama:
-      base_url: http://localhost:11434
-      model: llama3
-      input_cost_per_1m: 0
-      output_cost_per_1m: 0
+    provider: virty
+    model_id: llama3
+    input_cost_per_1m: 0
+    output_cost_per_1m: 0
 ```
 
-Clients always refer to a model as `<provider>/<name>` -- e.g.
-`bedrock/claude-sonnet` and `ollama/llama3` for the config above, in both
+Clients always refer to a model as `<provider name>/<model name>` -- e.g.
+`bedrock-us/claude-sonnet` and `virty/llama3` for the config above, in both
 `GET /v1/models` and the `"model"` field of `/v1/chat/completions` requests.
 This is the only accepted form; the bare `name` alone does not resolve.
+
+The config is checked at startup: an unknown field, an unknown provider or
+driver, a duplicate name, or an option the provider's driver doesn't support
+all stop the service from starting, rather than failing on the first request.
 
 Some models (e.g. long-context Anthropic models on Bedrock) charge a higher
 rate once the prompt exceeds a size threshold. Express that with `tiers`:
 
 ```yaml
-    bedrock:
-      model_id: ...
-      input_cost_per_1m: 0.10    # base rate, used when prompt_tokens <= 100000
-      output_cost_per_1m: 0.50
-      tiers:
-        - above_tokens: 100000    # applies when prompt_tokens > 100000
-          input_cost_per_1m: 0.50
-          output_cost_per_1m: 2.50
+  - name: ...
+    provider: ...
+    model_id: ...
+    input_cost_per_1m: 0.10    # base rate, used when prompt_tokens <= 100000
+    output_cost_per_1m: 0.50
+    tiers:
+      - above_tokens: 100000    # applies when prompt_tokens > 100000
+        input_cost_per_1m: 0.50
+        output_cost_per_1m: 2.50
 ```
 
-`tiers` works the same way under both `bedrock:` and `ollama:` blocks. The
+`tiers` works the same way for every driver. The
 tier is chosen by context size (prompt + cache tokens), not just prompt
 tokens.
 
@@ -73,12 +93,14 @@ all Bedrock models support it. Enable it per-model and set its (different)
 cache rates:
 
 ```yaml
-    bedrock:
-      model_id: ...
-      input_cost_per_1m: 0.10
-      output_cost_per_1m: 0.50
-      cache_read_cost_per_1m: 0.01     # cache hit -- cheap
-      cache_write_cost_per_1m: 0.125   # creating/refreshing a cache entry -- pricier than input
+  - name: ...
+    provider: ...                      # a bedrock_converse provider
+    model_id: ...
+    input_cost_per_1m: 0.10
+    output_cost_per_1m: 0.50
+    cache_read_cost_per_1m: 0.01       # cache hit -- cheap
+    cache_write_cost_per_1m: 0.125     # creating/refreshing a cache entry -- pricier than input
+    options:
       prompt_caching: true
 ```
 
@@ -86,8 +108,7 @@ Not every Bedrock model handles tool calling the same way. Two per-model
 switches handle the quirks:
 
 ```yaml
-    bedrock:
-      model_id: ...
+    options:
       supports_tools: true           # set false to never send tools to this model at all
       supports_tool_streaming: true  # set false if it rejects ConverseStream + tools together
 ```
@@ -111,22 +132,23 @@ Bedrock vision-capable models (e.g. Claude Haiku 5.5) accept images: send
 them the normal OpenAI way, as an `image_url` content part (either a
 `data:image/...;base64,...` URI, or a plain http(s) URL, which gets fetched
 and inlined as bytes since Bedrock's image block doesn't accept remote
-URLs). Supported formats: PNG, JPEG, GIF, WEBP. Ollama is unaffected --
-its requests are passed through to Ollama's own endpoint as-is.
+URLs). Supported formats: PNG, JPEG, GIF, WEBP. The `openai` driver is
+unaffected -- its requests are passed through to the upstream as-is.
 
 Add as many entries as you like, mixing providers freely. AWS credentials
-for Bedrock are picked up the normal boto3 way (env vars, `~/.aws/credentials`,
+for `bedrock_converse` providers are picked up the normal boto3 way (env vars, `~/.aws/credentials`,
 instance role, SSO profile) -- there's nothing AWS-specific to set in the
 config.
 
-If an Ollama endpoint requires an API key, set `api_key_env` to the name of an
-env var holding it, and it's sent as `Authorization: Bearer <key>`:
+If an `openai` provider requires an API key, set `api_key_env` to the name of
+an env var holding it, and it's sent as `Authorization: Bearer <key>`. Bedrock's
+bedrock-mantle endpoint works this way, using a long-term Bedrock API key:
 
 ```yaml
-    ollama:
-      base_url: https://ollama.example.com
-      model: llama3
-      api_key_env: OLLAMA_API_KEY
+  - name: mantle-us
+    driver: openai
+    base_url: https://bedrock-mantle.us-west-2.api.aws/openai/v1
+    api_key_env: AWS_BEARER_TOKEN_BEDROCK
 ```
 
 The key stays out of `config.yaml`, which the Helm chart renders into a plain
@@ -168,12 +190,12 @@ Each request emits:
 
 1. A JSON line on stdout via the `llm_mitm.usage` logger:
    ```json
-   {"key_id": "...", "model": "bedrock/claude-sonnet", "provider": "bedrock", "prompt_tokens": 123, "completion_tokens": 45, "cost_usd": 0.0012, "duration_s": 1.3, "status": "ok", "stream": false, "cache_read_tokens": 0, "cache_write_tokens": 0, "ts": 1760169600.0}
+   {"key_id": "...", "model": "bedrock-us/claude-sonnet", "provider": "bedrock-us", "driver": "bedrock_converse", "prompt_tokens": 123, "completion_tokens": 45, "cost_usd": 0.0012, "duration_s": 1.3, "status": "ok", "stream": false, "cache_read_tokens": 0, "cache_write_tokens": 0, "ts": 1760169600.0}
    ```
 2. Updates to Prometheus counters/histograms on `/metrics`:
    `llm_mitm_requests_total`, `llm_mitm_tokens_total`,
    `llm_mitm_cost_usd_total`, `llm_mitm_request_duration_seconds` -- all
-   labeled by `model`, `provider`, and `key_id` (status too, for requests).
+   labeled by `model`, `provider`, `driver`, and `key_id` (status too, for requests).
 
    Note: if you expect a large/unbounded number of distinct API keys, the
    `key_id` label will drive Prometheus cardinality up accordingly.
