@@ -30,6 +30,12 @@ def test_chunk_has_token_false_for_empty_content():
     assert not _chunk_has_token({"choices": [{"delta": {"content": ""}}]})
 
 
+def test_chunk_has_token_false_for_usage_only_chunk():
+    # The trailing chunk stream_options.include_usage asks for has an empty
+    # choices list.
+    assert not _chunk_has_token({"choices": [], "usage": {"prompt_tokens": 1, "completion_tokens": 1}})
+
+
 def test_finish_records_usage_event_with_computed_cost():
     captured = []
     # clock calls: construction (start), finish (duration)
@@ -86,6 +92,18 @@ def test_observe_chunk_leaves_ttft_none_without_a_token_chunk():
     accounting.observe_chunk({"choices": [{"delta": {"role": "assistant"}}]})
     accounting.observe_chunk({"choices": [{"delta": {}, "finish_reason": "stop"}]})
     accounting.finish(Usage(), "error", stream=True)
+
+    assert captured[0].ttft_s is None
+
+
+def test_observe_chunk_tolerates_usage_only_chunk_before_any_token():
+    captured = []
+    accounting = RequestAccounting(
+        "sk-test", "m", "ollama", PricingConfig(), clock=_fake_clock(0.0, 1.0), sink=captured.append
+    )
+    accounting.observe_chunk({"choices": [{"delta": {"role": "assistant"}}]})
+    accounting.observe_chunk({"choices": [], "usage": {"prompt_tokens": 1, "completion_tokens": 1}})
+    accounting.finish(Usage(), "ok", stream=True)
 
     assert captured[0].ttft_s is None
 

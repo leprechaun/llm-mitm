@@ -13,8 +13,12 @@ def _chunk_has_token(payload: dict) -> bool:
     # True for a chunk that carries actual generated output -- not the
     # synthetic role-only opener some providers send immediately, and not
     # a finish_reason-only chunk. Used to time TTFT from something a client
-    # would actually perceive as "the model responded".
-    delta = payload.get("choices", [{}])[0].get("delta", {})
+    # would actually perceive as "the model responded". The usage-only chunk
+    # that stream_options.include_usage adds at the end has empty choices.
+    choices = payload.get("choices")
+    if not choices:
+        return False
+    delta = choices[0].get("delta", {})
     return bool(delta.get("content")) or bool(delta.get("tool_calls"))
 
 
