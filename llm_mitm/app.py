@@ -10,14 +10,27 @@ from prometheus_client import CONTENT_TYPE_LATEST, generate_latest
 
 from llm_mitm.accounting import RequestAccounting
 from llm_mitm.auth import get_key_id
-from llm_mitm.config import load_config
-from llm_mitm.providers import Usage, bedrock, ollama
+from llm_mitm.config import (
+    BedrockMantleModelConfig,
+    BedrockModelConfig,
+    OllamaModelConfig,
+    load_config,
+)
+from llm_mitm.providers import Usage, bedrock, bedrock_mantle, ollama
 from llm_mitm.usage import record_usage
 
 CONFIG_PATH = os.environ.get("LLM_MITM_CONFIG", "config.yaml")
 config = load_config(CONFIG_PATH)
 MODELS = {m.id: m for m in config.models}
-PROVIDERS = {"bedrock": bedrock, "ollama": ollama}
+# Keyed by config type rather than the "provider" string -- "bedrock" covers
+# two wire protocols (Converse vs the bedrock-mantle OpenAI-compatible
+# endpoint), and which config block a model populated is what picks between
+# them, not a separate provider namespace.
+PROVIDERS = {
+    BedrockModelConfig: bedrock,
+    BedrockMantleModelConfig: bedrock_mantle,
+    OllamaModelConfig: ollama,
+}
 
 app = FastAPI(title="llm-mitm")
 logger = logging.getLogger("llm_mitm")
@@ -62,8 +75,8 @@ async def chat_completions(request: Request):
         return _openai_error("field 'messages' is required", "invalid_request_error", 400)
 
     key_id = get_key_id(request, hash_api_keys=config.server.hash_api_keys)
-    provider = PROVIDERS[model_entry.provider]
     provider_cfg = model_entry.provider_config
+    provider = PROVIDERS[type(provider_cfg)]
     stream = bool(body.get("stream", False))
     # sink=record_usage passed explicitly (rather than relying on
     # RequestAccounting's default) so tests can still patch

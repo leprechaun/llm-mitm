@@ -59,6 +59,17 @@ class BedrockModelConfig(PricingConfig):
     service_tier: Literal["default", "priority", "flex"] | None = None
 
 
+class BedrockMantleModelConfig(PricingConfig):
+    model_id: str
+    region: str
+    # Most bedrock-mantle models serve OpenAI-compatible endpoints under
+    # /v1; Gemma 4 models are the exception and use /openai/v1 instead --
+    # check the model's Bedrock "Programmatic Access" table before assuming
+    # the default. A request to the wrong path is rejected with "model ...
+    # isn't supported on this route".
+    base_path: str = "/v1"
+
+
 class OllamaModelConfig(PricingConfig):
     base_url: str = "http://localhost:11434"
     model: str
@@ -71,7 +82,12 @@ class OllamaModelConfig(PricingConfig):
 class ModelEntry(BaseModel):
     name: str
     provider: Literal["bedrock", "ollama"]
+    # Bedrock has two wire protocols behind one "bedrock" namespace: which
+    # block is populated -- not a separate provider -- picks Converse vs
+    # the bedrock-mantle OpenAI-compatible endpoint. Both share the
+    # "bedrock/<name>" model id.
     bedrock: BedrockModelConfig | None = None
+    bedrock_mantle: BedrockMantleModelConfig | None = None
     ollama: OllamaModelConfig | None = None
 
     @property
@@ -83,10 +99,19 @@ class ModelEntry(BaseModel):
         return f"{self.provider}/{self.name}"
 
     @property
-    def provider_config(self) -> BedrockModelConfig | OllamaModelConfig:
-        cfg = self.bedrock if self.provider == "bedrock" else self.ollama
+    def provider_config(self) -> BedrockModelConfig | BedrockMantleModelConfig | OllamaModelConfig:
+        if self.provider == "ollama":
+            if self.ollama is None:
+                raise ValueError(f"model '{self.name}' is missing its 'ollama' config block")
+            return self.ollama
+
+        if self.bedrock is not None and self.bedrock_mantle is not None:
+            raise ValueError(
+                f"model '{self.name}' has both 'bedrock' and 'bedrock_mantle' config blocks -- pick one"
+            )
+        cfg = self.bedrock or self.bedrock_mantle
         if cfg is None:
-            raise ValueError(f"model '{self.name}' is missing its '{self.provider}' config block")
+            raise ValueError(f"model '{self.name}' is missing a 'bedrock' or 'bedrock_mantle' config block")
         return cfg
 
 
