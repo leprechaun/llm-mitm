@@ -119,6 +119,20 @@ for Bedrock are picked up the normal boto3 way (env vars, `~/.aws/credentials`,
 instance role, SSO profile) -- there's nothing AWS-specific to set in the
 config.
 
+If an Ollama endpoint requires an API key, set `api_key_env` to the name of an
+env var holding it, and it's sent as `Authorization: Bearer <key>`:
+
+```yaml
+    ollama:
+      base_url: https://ollama.example.com
+      model: llama3
+      api_key_env: OLLAMA_API_KEY
+```
+
+The key stays out of `config.yaml`, which the Helm chart renders into a plain
+ConfigMap -- set it through the chart's `secretEnv` instead. This is separate
+from the key clients send to llm-mitm, which is never forwarded upstream.
+
 Set `LLM_MITM_CONFIG` to point at a different config file path if needed.
 
 ## Run

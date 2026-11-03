@@ -62,6 +62,10 @@ class BedrockModelConfig(PricingConfig):
 class OllamaModelConfig(PricingConfig):
     base_url: str = "http://localhost:11434"
     model: str
+    # Name of the env var holding a bearer token, for an Ollama that requires
+    # one (e.g. behind an authenticating proxy). The name rather than the key
+    # itself, since this file is rendered into a plain ConfigMap by the chart.
+    api_key_env: str | None = None
 
 
 class ModelEntry(BaseModel):

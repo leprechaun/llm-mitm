@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 from collections.abc import AsyncIterator
 
 import httpx
@@ -9,6 +10,15 @@ from llm_mitm.config import OllamaModelConfig
 from llm_mitm.providers import Usage
 
 _TIMEOUT = httpx.Timeout(600.0)
+
+
+def _auth_header(model_cfg: OllamaModelConfig) -> dict[str, str]:
+    if model_cfg.api_key_env is None:
+        return {}
+    key = os.environ.get(model_cfg.api_key_env)
+    if not key:
+        raise RuntimeError(f"{model_cfg.api_key_env} is not set -- required by this model's ollama.api_key_env")
+    return {"Authorization": f"Bearer {key}"}
 
 
 def _payload(body: dict, model_cfg: OllamaModelConfig, stream: bool) -> dict:
@@ -20,7 +30,7 @@ def _payload(body: dict, model_cfg: OllamaModelConfig, stream: bool) -> dict:
 
 async def chat(body: dict, model_cfg: OllamaModelConfig) -> tuple[dict, Usage]:
     payload = _payload(body, model_cfg, stream=False)
-    async with httpx.AsyncClient(timeout=_TIMEOUT) as client:
+    async with httpx.AsyncClient(timeout=_TIMEOUT, headers=_auth_header(model_cfg)) as client:
         response = await client.post(f"{model_cfg.base_url}/v1/chat/completions", json=payload)
         response.raise_for_status()
         data = response.json()
@@ -45,7 +55,7 @@ async def chat_stream(body: dict, model_cfg: OllamaModelConfig, usage: Usage) ->
     payload = _payload(body, model_cfg, stream=True)
     payload["stream_options"] = {"include_usage": True}
     async with (
-        httpx.AsyncClient(timeout=_TIMEOUT) as client,
+        httpx.AsyncClient(timeout=_TIMEOUT, headers=_auth_header(model_cfg)) as client,
         client.stream("POST", f"{model_cfg.base_url}/v1/chat/completions", json=payload) as response,
     ):
         response.raise_for_status()
