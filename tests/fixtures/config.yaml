@@ -12,6 +12,10 @@ providers:
   - name: bedrock-us
     driver: bedrock_converse
     region: us-west-2
+  - name: discovering
+    driver: openai
+    base_url: http://discovering:11434/v1
+    discover: true
 
 models:
   - name: test-model
@@ -24,3 +28,7 @@ models:
   - name: test-model
     provider: bedrock-us
     model_id: bedrock-upstream-id
+  - name: test-model
+    provider: discovering
+    model_id: aliased-upstream-id
+    input_cost_per_1m: 1000000

@@ -39,7 +39,7 @@ providers:
     driver: bedrock_converse
     region: us-east-1
 
-  - name: virty
+  - name: my-machine
     driver: openai
     base_url: http://localhost:11434/v1   # includes the version prefix
 
@@ -51,20 +51,39 @@ models:
     output_cost_per_1m: 15.00
 
   - name: llama3
-    provider: virty
+    provider: my-machine
     model_id: llama3
     input_cost_per_1m: 0
     output_cost_per_1m: 0
 ```
 
 Clients always refer to a model as `<provider name>/<model name>` -- e.g.
-`bedrock-us/claude-sonnet` and `virty/llama3` for the config above, in both
+`bedrock-us/claude-sonnet` and `my-machine/llama3` for the config above, in both
 `GET /v1/models` and the `"model"` field of `/v1/chat/completions` requests.
 This is the only accepted form; the bare `name` alone does not resolve.
 
 The config is checked at startup: an unknown field, an unknown provider or
 driver, a duplicate name, or an option the provider's driver doesn't support
 all stop the service from starting, rather than failing on the first request.
+
+For local upstreams, set `discover: true` on an `openai` provider to also
+expose whatever its `/models` endpoint lists, without adding each one here:
+
+```yaml
+providers:
+  - name: my-machine
+    driver: openai
+    base_url: http://localhost:11434/v1
+    discover: true
+```
+
+A pulled model is then available straight away as `my-machine/<upstream id>`. These
+models have no pricing, so they record a cost of $0, and any caller can use
+them -- don't enable this on a paid upstream. A model listed in `models:` keeps
+its name and pricing and isn't also exposed under its upstream id. If the
+upstream doesn't respond within 2 seconds, its discovered models are left out
+of `GET /v1/models` and return a 404 until it's back; configured models are
+unaffected.
 
 Some models (e.g. long-context Anthropic models on Bedrock) charge a higher
 rate once the prompt exceeds a size threshold. Express that with `tiers`:
@@ -172,7 +191,8 @@ Point OpenWebUI / opencode / any OpenAI-compatible client at
 
 - `POST /v1/chat/completions` -- OpenAI-compatible, streaming and
   non-streaming.
-- `GET /v1/models` -- lists the models defined in `config.yaml`.
+- `GET /v1/models` -- lists the models defined in `config.yaml`, plus any
+  discovered from providers with `discover: true`.
 - `GET /metrics` -- Prometheus metrics.
 - `GET /healthz` -- liveness check.
 

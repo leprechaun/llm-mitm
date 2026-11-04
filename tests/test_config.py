@@ -215,3 +215,36 @@ def test_same_model_name_under_two_providers_is_allowed(tmp_path):
     )
 
     assert [model.id for model in config.models] == ["mac/llama3", "virty/llama3"]
+
+
+def test_discovery_is_opt_in_per_provider(tmp_path):
+    config = _load(
+        tmp_path,
+        """
+        providers:
+          - name: virty
+            driver: openai
+            base_url: http://virty:11434/v1
+            discover: true
+          - name: mantle
+            driver: openai
+            base_url: https://mantle/openai/v1
+        models: []
+        """,
+    )
+
+    assert [provider.discover for provider in config.providers] == [True, False]
+
+
+def test_discovery_on_a_bedrock_provider_fails_at_load(tmp_path):
+    with pytest.raises(ValidationError):
+        _load(
+            tmp_path,
+            """
+            providers:
+              - name: bedrock-us
+                driver: bedrock_converse
+                discover: true
+            models: []
+            """,
+        )

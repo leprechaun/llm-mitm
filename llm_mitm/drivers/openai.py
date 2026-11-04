@@ -10,6 +10,9 @@ from llm_mitm.config import ModelConfig, OpenAIProviderConfig
 from llm_mitm.drivers import Usage
 
 _TIMEOUT = httpx.Timeout(600.0)
+# Short, since a client is waiting on this and a local upstream that's asleep
+# just doesn't answer.
+_LIST_MODELS_TIMEOUT = httpx.Timeout(2.0)
 
 
 def _auth_header(provider: OpenAIProviderConfig) -> dict[str, str]:
@@ -26,6 +29,13 @@ def _payload(body: dict, model: ModelConfig, stream: bool) -> dict:
     payload["model"] = model.model_id
     payload["stream"] = stream
     return payload
+
+
+async def list_models(provider: OpenAIProviderConfig) -> list[str]:
+    async with httpx.AsyncClient(timeout=_LIST_MODELS_TIMEOUT, headers=_auth_header(provider)) as client:
+        response = await client.get(f"{provider.base_url}/models")
+        response.raise_for_status()
+    return [entry["id"] for entry in response.json()["data"]]
 
 
 async def chat(body: dict, provider: OpenAIProviderConfig, model: ModelConfig) -> tuple[dict, Usage]:

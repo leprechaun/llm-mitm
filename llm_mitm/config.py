@@ -84,6 +84,11 @@ class OpenAIProviderConfig(_StrictModel):
     # requires one. The name rather than the key itself, since this file is
     # rendered into a plain ConfigMap by the chart.
     api_key_env: str | None = None
+    # Also expose whatever the upstream's /models lists, on top of the models
+    # configured for this provider. Those have no pricing and record a cost
+    # of $0, and any caller can use them -- so this is for local upstreams,
+    # not for paid ones.
+    discover: bool = False
 
 
 class BedrockConverseProviderConfig(_StrictModel):

@@ -135,3 +135,35 @@ def test_chat_does_not_mutate_the_clients_request_body():
     _chat(_provider(), httpx.Response(200, json={"usage": {}}))
 
     assert _BODY["model"] == "virty/llama3"
+
+
+def test_list_models_returns_upstream_ids_from_the_providers_base_url():
+    requests: list[httpx.Request] = []
+    response = httpx.Response(200, json={"object": "list", "data": [{"id": "llama3.1:8b"}, {"id": "gemma:4"}]})
+
+    with patch.object(openai.httpx, "AsyncClient", _fake_upstream(requests, response)):
+        ids = asyncio.run(openai.list_models(_provider(base_url="http://mac:8000/api/v1")))
+
+    assert ids == ["llama3.1:8b", "gemma:4"]
+    assert str(requests[0].url) == "http://mac:8000/api/v1/models"
+
+
+def test_list_models_sends_the_providers_api_key(monkeypatch):
+    monkeypatch.setenv("OMLX_API_KEY", "secret")
+    requests: list[httpx.Request] = []
+    response = httpx.Response(200, json={"data": []})
+
+    with patch.object(openai.httpx, "AsyncClient", _fake_upstream(requests, response)):
+        asyncio.run(openai.list_models(_provider(api_key_env="OMLX_API_KEY")))
+
+    assert requests[0].headers["authorization"] == "Bearer secret"
+
+
+def test_list_models_raises_on_upstream_error():
+    response = httpx.Response(500, request=httpx.Request("GET", "http://virty:11434/v1/models"))
+
+    with (
+        patch.object(openai.httpx, "AsyncClient", _fake_upstream([], response)),
+        pytest.raises(httpx.HTTPStatusError),
+    ):
+        asyncio.run(openai.list_models(_provider()))
